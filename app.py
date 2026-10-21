@@ -718,9 +718,17 @@ if clean_nav == "Dashboard":
                     "horizon_days": forecast_horizon,
                     "high_cost_threshold": 10000.0,
                     "ollama_url": "http://localhost:11434",
-                    "ollama_model": "llama3"
+                    "ollama_model": "llama3",
+                    "agents_enabled": {
+                        "planner": st.session_state.get("agent_planner_active", True),
+                        "forecaster": st.session_state.get("agent_forecaster_active", True),
+                        "inventory_risk": st.session_state.get("agent_inventory_risk_active", True),
+                        "replenishment": st.session_state.get("agent_replenishment_active", True),
+                        "critic": st.session_state.get("agent_critic_active", True),
+                        "validator": st.session_state.get("agent_validator_active", True)
+                    }
                 }
-                with st.spinner("⚡ LangGraph invoking StateGraph across 5 agent nodes..."):
+                with st.spinner("⚡ LangGraph invoking StateGraph across active agent nodes..."):
                     wf_result = run_stocksense_workflow(
                         df=kaggle_df.head(600),
                         mapping=mapping,
@@ -1399,15 +1407,32 @@ if clean_nav == "Dashboard":
     # RIGHT COLUMN: AI AGENTS, POLICY SUGGESTIONS, FUTURE-READY CARD
     # -----------------------------------------------------------------------
     with col_sidebar_right:
-        render_html("""
+        # Agent activation state lookup
+        p_act = st.session_state.get("agent_planner_active", True)
+        inv_act = st.session_state.get("agent_inventory_risk_active", True)
+        rep_act = st.session_state.get("agent_replenishment_active", True)
+        fc_act = st.session_state.get("agent_forecaster_active", True)
+        crit_act = st.session_state.get("agent_critic_active", True)
+        val_act = st.session_state.get("agent_validator_active", True)
+
+        active_count = sum([p_act, inv_act, rep_act, fc_act, crit_act, val_act])
+        all_op_text = "All Systems Operational" if active_count == 6 else f"{active_count}/6 Agents Active"
+        dot_color = "#34d399" if active_count == 6 else ("#f59e0b" if active_count > 0 else "#ef4444")
+
+        def _make_badge(is_active):
+            if is_active:
+                return '<div class="agent-active-badge">Active</div>'
+            return '<div style="background:rgba(239,68,68,0.18); color:#fca5a5; border:1px solid rgba(239,68,68,0.4); border-radius:12px; padding:2px 8px; font-size:0.68rem; font-weight:700;">Deactivated</div>'
+
+        render_html(f"""
         <div class="glass-card" style="margin-bottom: 0.9rem;">
         <div class="agent-panel-header">
         <div style="display:flex; align-items:center; gap:8px;">
         <span style="font-size:1.1rem;">🤖</span>
         <span style="font-size:0.95rem; font-weight:800; color:#f8fafc;">AI Agents</span>
         </div>
-        <div style="font-size:0.72rem; color:#34d399; font-weight:600; display:flex; align-items:center;">
-        <span class="live-dot"></span> All Systems Operational
+        <div style="font-size:0.72rem; color:{dot_color}; font-weight:600; display:flex; align-items:center;">
+        <span class="live-dot" style="background:{dot_color}; box-shadow:0 0 8px {dot_color};"></span> {all_op_text}
         </div>
         </div>
         <div style="display:flex; flex-direction:column; gap:0.4rem;">
@@ -1416,60 +1441,60 @@ if clean_nav == "Dashboard":
         <div class="agent-tile tile-purple">🧠</div>
         <div>
         <div class="agent-title-text">Planner</div>
-        <div class="agent-desc-text">Coordinating workflow...</div>
+        <div class="agent-desc-text">{'Coordinating workflow...' if p_act else 'Manual override (paused)'}</div>
         </div>
         </div>
-        <div class="agent-active-badge">Active</div>
+        {_make_badge(p_act)}
         </div>
         <div class="agent-status-row">
         <div class="agent-left-box">
         <div class="agent-tile tile-amber">📦</div>
         <div>
         <div class="agent-title-text">Inventory Agent</div>
-        <div class="agent-desc-text">Analyzing stock levels...</div>
+        <div class="agent-desc-text">{'Analyzing stock levels...' if inv_act else 'Bypassed by operator'}</div>
         </div>
         </div>
-        <div class="agent-active-badge">Active</div>
+        {_make_badge(inv_act)}
         </div>
         <div class="agent-status-row">
         <div class="agent-left-box">
         <div class="agent-tile tile-green">🚚</div>
         <div>
         <div class="agent-title-text">Replenishment Agent</div>
-        <div class="agent-desc-text">Generating reorder recommendations...</div>
+        <div class="agent-desc-text">{'Generating recommendations...' if rep_act else 'Bypassed by operator'}</div>
         </div>
         </div>
-        <div class="agent-active-badge">Active</div>
+        {_make_badge(rep_act)}
         </div>
         <div class="agent-status-row">
         <div class="agent-left-box">
         <div class="agent-tile tile-blue">📈</div>
         <div>
         <div class="agent-title-text">Forecaster</div>
-        <div class="agent-desc-text">Predicting demand...</div>
+        <div class="agent-desc-text">{'Predicting demand...' if fc_act else 'ML engine paused'}</div>
         </div>
         </div>
-        <div class="agent-active-badge">Active</div>
+        {_make_badge(fc_act)}
         </div>
         <div class="agent-status-row">
         <div class="agent-left-box">
         <div class="agent-tile tile-purple">🛡️</div>
         <div>
         <div class="agent-title-text">Critic Agent</div>
-        <div class="agent-desc-text">Reviewing results...</div>
+        <div class="agent-desc-text">{'Reviewing results...' if crit_act else 'Audit guard bypassed'}</div>
         </div>
         </div>
-        <div class="agent-active-badge">Active</div>
+        {_make_badge(crit_act)}
         </div>
         <div class="agent-status-row">
         <div class="agent-left-box">
         <div class="agent-tile tile-teal">🗄️</div>
         <div>
         <div class="agent-title-text">Data Validator</div>
-        <div class="agent-desc-text">Validating data...</div>
+        <div class="agent-desc-text">{'Validating data...' if val_act else 'Schema checks paused'}</div>
         </div>
         </div>
-        <div class="agent-active-badge">Active</div>
+        {_make_badge(val_act)}
         </div>
         </div>
         </div>
@@ -1897,68 +1922,180 @@ elif clean_nav == "Policies":
 # VIEW 6: AI AGENTS MESH TELEMETRY
 # ===========================================================================
 elif clean_nav == "AI Agents":
-    st.markdown("### 🤖 Autonomous Multi-Agent Mesh & LangGraph State Machine")
-    st.caption("Real-time telemetry, cognitive reasoning traces, and decoupled zero-trust critic auditing.")
+    st.markdown("### 🤖 Autonomous Multi-Agent Mesh & Operational Control Hub")
+    st.caption("Real-time telemetry, manual agent activation/deactivation controls, and decoupled zero-trust critic auditing.")
+
+    # Master Controls Toolbar
+    ctrl_c1, ctrl_c2, ctrl_info = st.columns([1.1, 1.1, 2.2])
+    with ctrl_c1:
+        if st.button("⚡ Activate All Agents", use_container_width=True):
+            for k in ["agent_planner_active", "agent_forecaster_active", "agent_inventory_risk_active", "agent_replenishment_active", "agent_critic_active", "agent_validator_active"]:
+                st.session_state[k] = True
+            st.rerun()
+    with ctrl_c2:
+        if st.button("⏸️ Deactivate All Agents", use_container_width=True):
+            for k in ["agent_planner_active", "agent_forecaster_active", "agent_inventory_risk_active", "agent_replenishment_active", "agent_critic_active", "agent_validator_active"]:
+                st.session_state[k] = False
+            st.rerun()
+
+    active_count = sum([
+        st.session_state.get("agent_planner_active", True),
+        st.session_state.get("agent_forecaster_active", True),
+        st.session_state.get("agent_inventory_risk_active", True),
+        st.session_state.get("agent_replenishment_active", True),
+        st.session_state.get("agent_critic_active", True),
+        st.session_state.get("agent_validator_active", True)
+    ])
+
+    with ctrl_info:
+        st.markdown(f"""
+        <div style="background:rgba(30,41,59,0.5); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:6px 14px; display:flex; align-items:center; justify-content:space-between;">
+            <span style="font-size:0.84rem; color:#cbd5e1;">Active Swarm: <strong style="color:#38bdf8;">{active_count} of 6 Agents</strong></span>
+            <span style="font-size:0.75rem; color:{'#10b981' if active_count == 6 else '#f59e0b'}; font-weight:700;">
+                {'● All Agents Online' if active_count == 6 else f'⚠️ {6 - active_count} Agent(s) Paused'}
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
 
     agent_grid_col1, agent_grid_col2, agent_grid_col3 = st.columns(3)
+
     with agent_grid_col1:
-        render_html("""
-        <div class="glass-card">
-            <div style="font-size:1.6rem; margin-bottom:0.4rem;">🧠</div>
-            <div style="font-weight:700; color:#f8fafc;">Agent 1: Planner</div>
-            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0;">Decomposes business goals into 5 distinct verified stages.</div>
-            <div style="font-size:0.75rem; color:#10b981; font-weight:700;">● Active — LangGraph Synced</div>
+        is_p = st.session_state.get("agent_planner_active", True)
+        b_color = "rgba(56, 189, 248, 0.45)" if is_p else "rgba(239, 68, 68, 0.35)"
+        st.markdown(f"""
+        <div class="glass-card" style="border:1px solid {b_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-size:1.6rem;">🧠</div>
+                <div style="font-size:0.72rem; font-weight:700; color:{'#10b981' if is_p else '#f87171'};">
+                    {'● ACTIVE' if is_p else '⏸️ DEACTIVATED'}
+                </div>
+            </div>
+            <div style="font-weight:700; color:#f8fafc; margin-top:0.3rem;">Agent 1: Planner</div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0; min-height:36px;">
+                {'Decomposes business goals into 5 distinct verified stages.' if is_p else 'Bypassed by operator. Direct execution fallback active.'}
+            </div>
         </div>
-        """)
+        """, unsafe_allow_html=True)
+        new_p = st.toggle("Activate Planner", value=is_p, key="tog_planner")
+        if new_p != is_p:
+            st.session_state["agent_planner_active"] = new_p
+            st.rerun()
+
     with agent_grid_col2:
-        render_html("""
-        <div class="glass-card">
-            <div style="font-size:1.6rem; margin-bottom:0.4rem;">📈</div>
-            <div style="font-weight:700; color:#f8fafc;">Agent 2: Forecaster</div>
-            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0;">Executes chronological holdout splits and demand predictions.</div>
-            <div style="font-size:0.75rem; color:#10b981; font-weight:700;">● Active — Ridge Engine</div>
+        is_fc = st.session_state.get("agent_forecaster_active", True)
+        b_color = "rgba(56, 189, 248, 0.45)" if is_fc else "rgba(239, 68, 68, 0.35)"
+        st.markdown(f"""
+        <div class="glass-card" style="border:1px solid {b_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-size:1.6rem;">📈</div>
+                <div style="font-size:0.72rem; font-weight:700; color:{'#10b981' if is_fc else '#f87171'};">
+                    {'● ACTIVE' if is_fc else '⏸️ DEACTIVATED'}
+                </div>
+            </div>
+            <div style="font-weight:700; color:#f8fafc; margin-top:0.3rem;">Agent 2: Forecaster</div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0; min-height:36px;">
+                {'Executes chronological holdout splits and demand predictions.' if is_fc else 'Forecasting ML engine paused by operator.'}
+            </div>
         </div>
-        """)
+        """, unsafe_allow_html=True)
+        new_fc = st.toggle("Activate Forecaster", value=is_fc, key="tog_forecaster")
+        if new_fc != is_fc:
+            st.session_state["agent_forecaster_active"] = new_fc
+            st.rerun()
+
     with agent_grid_col3:
-        render_html("""
-        <div class="glass-card">
-            <div style="font-size:1.6rem; margin-bottom:0.4rem;">🛡️</div>
-            <div style="font-weight:700; color:#f8fafc;">Agent 3: Inventory Agent</div>
-            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0;">Calculates Lead-Time Demand (D_L) and Days of Cover (DOC).</div>
-            <div style="font-size:0.75rem; color:#10b981; font-weight:700;">● Active — Stock Sentinel</div>
+        is_inv = st.session_state.get("agent_inventory_risk_active", True)
+        b_color = "rgba(56, 189, 248, 0.45)" if is_inv else "rgba(239, 68, 68, 0.35)"
+        st.markdown(f"""
+        <div class="glass-card" style="border:1px solid {b_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-size:1.6rem;">🛡️</div>
+                <div style="font-size:0.72rem; font-weight:700; color:{'#10b981' if is_inv else '#f87171'};">
+                    {'● ACTIVE' if is_inv else '⏸️ DEACTIVATED'}
+                </div>
+            </div>
+            <div style="font-weight:700; color:#f8fafc; margin-top:0.3rem;">Agent 3: Inventory Agent</div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0; min-height:36px;">
+                {'Calculates Lead-Time Demand (D_L) and Days of Cover (DOC).' if is_inv else 'Inventory vulnerability analysis bypassed.'}
+            </div>
         </div>
-        """)
+        """, unsafe_allow_html=True)
+        new_inv = st.toggle("Activate Inventory Agent", value=is_inv, key="tog_inv_risk")
+        if new_inv != is_inv:
+            st.session_state["agent_inventory_risk_active"] = new_inv
+            st.rerun()
 
     st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
 
     agent_grid_col4, agent_grid_col5, agent_grid_col6 = st.columns(3)
+
     with agent_grid_col4:
-        render_html("""
-        <div class="glass-card">
-            <div style="font-size:1.6rem; margin-bottom:0.4rem;">🚚</div>
-            <div style="font-weight:700; color:#f8fafc;">Agent 4: Replenishment</div>
-            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0;">Calculates deterministic purchase quantities paired with SOP citations.</div>
-            <div style="font-size:0.75rem; color:#10b981; font-weight:700;">● Active — Priority Ranked</div>
+        is_rep = st.session_state.get("agent_replenishment_active", True)
+        b_color = "rgba(56, 189, 248, 0.45)" if is_rep else "rgba(239, 68, 68, 0.35)"
+        st.markdown(f"""
+        <div class="glass-card" style="border:1px solid {b_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-size:1.6rem;">🚚</div>
+                <div style="font-size:0.72rem; font-weight:700; color:{'#10b981' if is_rep else '#f87171'};">
+                    {'● ACTIVE' if is_rep else '⏸️ DEACTIVATED'}
+                </div>
+            </div>
+            <div style="font-weight:700; color:#f8fafc; margin-top:0.3rem;">Agent 4: Replenishment</div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0; min-height:36px;">
+                {'Calculates purchase quantities paired with corporate SOP citations.' if is_rep else 'Order recommendation generation paused.'}
+            </div>
         </div>
-        """)
+        """, unsafe_allow_html=True)
+        new_rep = st.toggle("Activate Replenishment", value=is_rep, key="tog_replenishment")
+        if new_rep != is_rep:
+            st.session_state["agent_replenishment_active"] = new_rep
+            st.rerun()
+
     with agent_grid_col5:
-        render_html("""
-        <div class="glass-card">
-            <div style="font-size:1.6rem; margin-bottom:0.4rem;">⚖️</div>
-            <div style="font-weight:700; color:#f8fafc;">Agent 5: Critic Guard</div>
-            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0;">Zero-Trust independent mathematical auditor and prompt injection defense.</div>
-            <div style="font-size:0.75rem; color:#10b981; font-weight:700;">● Active — Math Verified (PASS)</div>
+        is_crit = st.session_state.get("agent_critic_active", True)
+        b_color = "rgba(56, 189, 248, 0.45)" if is_crit else "rgba(239, 68, 68, 0.35)"
+        st.markdown(f"""
+        <div class="glass-card" style="border:1px solid {b_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-size:1.6rem;">⚖️</div>
+                <div style="font-size:0.72rem; font-weight:700; color:{'#10b981' if is_crit else '#f87171'};">
+                    {'● ACTIVE' if is_crit else '⏸️ DEACTIVATED'}
+                </div>
+            </div>
+            <div style="font-weight:700; color:#f8fafc; margin-top:0.3rem;">Agent 5: Critic Guard</div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0; min-height:36px;">
+                {'Zero-Trust independent mathematical auditor and invariant defense.' if is_crit else 'Zero-trust verification bypassed (auto-authorized).'}
+            </div>
         </div>
-        """)
+        """, unsafe_allow_html=True)
+        new_crit = st.toggle("Activate Critic Guard", value=is_crit, key="tog_critic")
+        if new_crit != is_crit:
+            st.session_state["agent_critic_active"] = new_crit
+            st.rerun()
+
     with agent_grid_col6:
-        render_html("""
-        <div class="glass-card">
-            <div style="font-size:1.6rem; margin-bottom:0.4rem;">🗄️</div>
-            <div style="font-weight:700; color:#f8fafc;">Agent 6: Data Validator</div>
-            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0;">Enforces schema integrity, date sanitization, and missing value boundaries.</div>
-            <div style="font-size:0.75rem; color:#10b981; font-weight:700;">● Active — Zero Corruption</div>
+        is_val = st.session_state.get("agent_validator_active", True)
+        b_color = "rgba(56, 189, 248, 0.45)" if is_val else "rgba(239, 68, 68, 0.35)"
+        st.markdown(f"""
+        <div class="glass-card" style="border:1px solid {b_color};">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-size:1.6rem;">🗄️</div>
+                <div style="font-size:0.72rem; font-weight:700; color:{'#10b981' if is_val else '#f87171'};">
+                    {'● ACTIVE' if is_val else '⏸️ DEACTIVATED'}
+                </div>
+            </div>
+            <div style="font-weight:700; color:#f8fafc; margin-top:0.3rem;">Agent 6: Data Validator</div>
+            <div style="font-size:0.75rem; color:#94a3b8; margin:0.3rem 0; min-height:36px;">
+                {'Enforces schema integrity, date sanitization, and data quality.' if is_val else 'Strict schema sanitation boundary paused.'}
+            </div>
         </div>
-        """)
+        """, unsafe_allow_html=True)
+        new_val = st.toggle("Activate Data Validator", value=is_val, key="tog_validator")
+        if new_val != is_val:
+            st.session_state["agent_validator_active"] = new_val
+            st.rerun()
 
 # ===========================================================================
 # VIEW 7: EXECUTIVE REPORTS

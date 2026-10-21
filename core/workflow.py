@@ -52,6 +52,26 @@ def log_event(state: WorkflowState, agent: str, message: str, level: str = "INFO
 
 def planner_node(state: WorkflowState) -> WorkflowState:
     """Agent 1: Planner Node - validates data readiness and designs execution plan."""
+    enabled = state.get("user_config", {}).get("agents_enabled", {}).get("planner", True)
+    if not enabled:
+        log_event(state, "Planner / Coordinator", "Planner Agent is manually deactivated by operator. Using direct execution baseline.", "WARNING")
+        profile, clean_df = profile_and_validate_dataset(
+            df=state["raw_df"],
+            mapping=state["column_mapping"]
+        )
+        state["data_profile"] = profile
+        state["clean_df"] = clean_df
+        state["execution_plan"] = ExecutionPlan(
+            plan_id="PLAN-MANUAL-OVERRIDE",
+            stages=["Direct execution"],
+            can_proceed=True,
+            missing_prerequisites=[],
+            estimated_runtime_seconds=1.0,
+            llm_reasoning="Manual operator override - planner bypassed."
+        )
+        state["workflow_status"] = "PLANNING"
+        return state
+
     log_event(state, "Planner / Coordinator", "Initiating planning and dataset validation pre-flight checks.")
 
     # 1. Profile and validate dataset
@@ -94,6 +114,13 @@ def planner_node(state: WorkflowState) -> WorkflowState:
 
 def forecaster_node(state: WorkflowState) -> WorkflowState:
     """Agent 2: Demand Forecaster Node - aggregates sales and predicts demand."""
+    enabled = state.get("user_config", {}).get("agents_enabled", {}).get("forecaster", True)
+    if not enabled:
+        log_event(state, "Demand Forecaster", "Demand Forecaster is manually deactivated by operator. Skipping forecast calculations.", "WARNING")
+        state["forecast_results"] = {}
+        state["workflow_status"] = "FORECASTING"
+        return state
+
     log_event(state, "Demand Forecaster", "Executing chronological baseline forecasting (7-SMA & Holdout).")
     clean_df = state["clean_df"]
 
@@ -115,6 +142,13 @@ def forecaster_node(state: WorkflowState) -> WorkflowState:
 
 def inventory_risk_node(state: WorkflowState) -> WorkflowState:
     """Agent 3: Inventory Risk Node - computes D_L, DOC, and stratifies stockout risk."""
+    enabled = state.get("user_config", {}).get("agents_enabled", {}).get("inventory_risk", True)
+    if not enabled:
+        log_event(state, "Inventory Risk Analyst", "Inventory Risk Analyst is manually deactivated by operator. Skipping risk stratification.", "WARNING")
+        state["risk_results"] = {}
+        state["workflow_status"] = "ASSESSING"
+        return state
+
     log_event(state, "Inventory Risk Analyst", "Analyzing inventory coverage and stockout risk against lead time.")
     lead_time = state["user_config"].get("lead_time_days", 7)
     safety_stock = state["user_config"].get("safety_stock", 14.0)
@@ -157,6 +191,13 @@ def inventory_risk_node(state: WorkflowState) -> WorkflowState:
 
 def replenishment_node(state: WorkflowState) -> WorkflowState:
     """Agent 4: Replenishment Node - calculates reorder quantity Q and queries policy RAG."""
+    enabled = state.get("user_config", {}).get("agents_enabled", {}).get("replenishment", True)
+    if not enabled:
+        log_event(state, "Replenishment Agent", "Replenishment Agent is manually deactivated by operator. Skipping purchase recommendations.", "WARNING")
+        state["recommendations"] = []
+        state["workflow_status"] = "REPLENISHING"
+        return state
+
     log_event(state, "Replenishment Agent", "Computing proposed replenishment quantities and retrieving policy rules.")
     policy_retriever = PolicyRetriever()
     agent = ReplenishmentAgent(policy_retriever=policy_retriever)
@@ -217,6 +258,22 @@ def replenishment_node(state: WorkflowState) -> WorkflowState:
 
 def critic_node(state: WorkflowState) -> WorkflowState:
     """Agent 5: Critic Node - independently recalculates math, checks policies, and issues verdict."""
+    enabled = state.get("user_config", {}).get("agents_enabled", {}).get("critic", True)
+    if not enabled:
+        log_event(state, "Critic / Safety Validator", "Critic Guard is manually deactivated by operator. Validation audit bypassed (auto-authorized).", "WARNING")
+        state["validation_result"] = ValidationResult(
+            plan_id=state["execution_plan"].plan_id if state.get("execution_plan") else "PLAN-BYPASSED",
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            is_valid=True,
+            overall_status="PASS",
+            checks_run={"critic_agent_active": False, "bypass_authorized": True},
+            policy_citations=[],
+            discrepancies=[],
+            retry_count=0
+        )
+        state["workflow_status"] = "COMPLETED"
+        return state
+
     log_event(state, "Critic / Safety Validator", "Running independent recalculation and policy compliance validation.")
     critic = CriticAgent(
         high_cost_review_threshold=state["user_config"].get("high_cost_threshold", 10000.0)
