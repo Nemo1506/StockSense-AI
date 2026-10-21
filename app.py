@@ -1489,7 +1489,7 @@ elif clean_nav == "Inventory":
         sub_df = kaggle_df[kaggle_df['Date'] == latest_d].copy() if 'Date' in kaggle_df.columns else kaggle_df.head(100).copy()
         
         display_rows = []
-        for _, row in sub_df.head(60).iterrows():
+        for _, row in sub_df.iterrows():
             stk = float(row.get('Inventory Level', 0))
             sold = float(row.get('Units Sold', 1))
             doc = stk / max(sold, 1.0)
@@ -1503,9 +1503,9 @@ elif clean_nav == "Inventory":
                 status = "Healthy Stock"
 
             display_rows.append({
-                "SKU": row.get('Product ID', 'P0001'),
-                "Store": row.get('Store ID', 'S001'),
-                "Category": row.get('Category', 'General'),
+                "SKU": str(row.get('Product ID', 'P0001')),
+                "Store": str(row.get('Store ID', 'S001')),
+                "Category": str(row.get('Category', 'General')),
                 "Stock (Units)": int(stk),
                 "Recent Daily Demand": int(sold),
                 "Price ($)": float(row.get('Price', 0.0)),
@@ -1534,7 +1534,27 @@ elif clean_nav == "Inventory":
         elif "Out" in stock_status_filter:
             df_inv = df_inv[df_inv["Status"] == "Out of Stock"]
 
-    st.dataframe(df_inv, use_container_width=True, height=380)
+    df_inv = df_inv.reset_index(drop=True)
+
+    # Telemetry KPI Strip
+    total_recs = len(df_inv)
+    h_count = sum(df_inv["Status"].isin(["Healthy Stock", "Healthy"])) if "Status" in df_inv.columns else 0
+    l_count = sum(df_inv["Status"].isin(["Low Stock", "Low Stock / Reorder", "Critical Stockout"])) if "Status" in df_inv.columns else 0
+    o_count = sum(df_inv["Status"] == "Out of Stock") if "Status" in df_inv.columns else 0
+
+    st.markdown(f"""
+    <div style="display:flex; gap:1rem; margin-bottom:0.75rem; font-size:0.82rem; color:#94a3b8;">
+        <span>Filtered SKUs: <strong style="color:#f8fafc;">{total_recs}</strong></span>
+        <span>•</span>
+        <span style="color:#86efac;">Healthy: <strong>{h_count}</strong></span>
+        <span>•</span>
+        <span style="color:#fde047;">Low Stock: <strong>{l_count}</strong></span>
+        <span>•</span>
+        <span style="color:#fca5a5;">Out of Stock: <strong>{o_count}</strong></span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.dataframe(df_inv, use_container_width=True, height=420)
 
 # ===========================================================================
 # VIEW 3: FORECASTING ENGINE
