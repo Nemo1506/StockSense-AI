@@ -1489,11 +1489,19 @@ elif clean_nav == "Inventory":
         sub_df = kaggle_df[kaggle_df['Date'] == latest_d].copy() if 'Date' in kaggle_df.columns else kaggle_df.head(100).copy()
         
         display_rows = []
-        for _, row in sub_df.head(50).iterrows():
+        for _, row in sub_df.head(60).iterrows():
             stk = float(row.get('Inventory Level', 0))
             sold = float(row.get('Units Sold', 1))
-            doc = stk / max(sold, 1)
-            status = "Low Stock" if doc < 5 else ("Out of Stock" if stk <= 0 else "Healthy")
+            doc = stk / max(sold, 1.0)
+
+            # Deterministic, physical supply chain classification
+            if stk <= 0:
+                status = "Out of Stock"
+            elif doc < max(float(lead_time_days), 5.0):
+                status = "Low Stock"
+            else:
+                status = "Healthy Stock"
+
             display_rows.append({
                 "SKU": row.get('Product ID', 'P0001'),
                 "Store": row.get('Store ID', 'S001'),
@@ -1507,16 +1515,24 @@ elif clean_nav == "Inventory":
         df_inv = pd.DataFrame(display_rows)
     else:
         inv_data = [
-            {"SKU": "SKU-EL-01", "Product": "Wireless Earbuds", "Category": "Electronics", "Stock": 320, "Lead Time": "7 days", "DOC": "8.2 days", "Status": "Low Stock"},
-            {"SKU": "SKU-FW-02", "Product": "Running Shoes", "Category": "Footwear", "Stock": 640, "Lead Time": "10 days", "DOC": "22.5 days", "Status": "Healthy"},
+            {"SKU": "SKU-EL-01", "Product": "Wireless Earbuds", "Category": "Electronics", "Stock": 320, "Lead Time": "7 days", "DOC": "8.2 days", "Status": "Healthy Stock"},
+            {"SKU": "SKU-FW-02", "Product": "Running Shoes", "Category": "Footwear", "Stock": 640, "Lead Time": "10 days", "DOC": "22.5 days", "Status": "Healthy Stock"},
             {"SKU": "SKU-HW-03", "Product": "Protein Powder", "Category": "Health & Wellness", "Stock": 210, "Lead Time": "5 days", "DOC": "7.1 days", "Status": "Low Stock"},
-            {"SKU": "SKU-AP-04", "Product": "Jeans", "Category": "Apparel", "Stock": 980, "Lead Time": "14 days", "DOC": "38.6 days", "Status": "Healthy"},
+            {"SKU": "SKU-AP-04", "Product": "Jeans", "Category": "Apparel", "Stock": 980, "Lead Time": "14 days", "DOC": "38.6 days", "Status": "Healthy Stock"},
             {"SKU": "SKU-GR-05", "Product": "Coffee Beans", "Category": "Groceries", "Stock": 150, "Lead Time": "3 days", "DOC": "7.5 days", "Status": "Low Stock"}
         ]
         df_inv = pd.DataFrame(inv_data)
 
     if cat_filter != "All Departments" and "Category" in df_inv.columns:
         df_inv = df_inv[df_inv["Category"] == cat_filter]
+
+    if stock_status_filter != "All Statuses" and "Status" in df_inv.columns:
+        if stock_status_filter == "Healthy Stock":
+            df_inv = df_inv[df_inv["Status"].isin(["Healthy Stock", "Healthy"])]
+        elif "Low" in stock_status_filter:
+            df_inv = df_inv[df_inv["Status"].isin(["Low Stock", "Low Stock / Reorder", "Critical Stockout"])]
+        elif "Out" in stock_status_filter:
+            df_inv = df_inv[df_inv["Status"] == "Out of Stock"]
 
     st.dataframe(df_inv, use_container_width=True, height=380)
 
