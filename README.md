@@ -1,5 +1,5 @@
-# Retail Inventory — Management & Forecasting
-### Autonomous Multi-Agent Inventory Intelligence & Demand Forecasting System
+# StockSense AI — Autonomous Multi-Agent Inventory Intelligence & Demand Forecasting
+### State-of-the-Art Enterprise Command Center with LangGraph Orchestration & Zero-Trust Critic Guardrails
 
 [![Python](https://img.shields.io/badge/Python-3.13-blue.svg)](https://python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-1.65.0-red.svg)](https://streamlit.io)
