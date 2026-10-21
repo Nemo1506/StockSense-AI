@@ -12,7 +12,8 @@ import io
 import math
 import base64
 import json
-from datetime import datetime, timedelta
+import calendar
+from datetime import datetime, timedelta, date
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -430,32 +431,92 @@ with st.sidebar:
     st.markdown("---")
 
     with st.expander("📅 Timeline & Simulation Clock", expanded=True):
+        month_names = [
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"
+        ]
+
+        if "sim_date" not in st.session_state:
+            st.session_state["sim_date"] = date(2026, 10, 25)
+
         timeline_mode = st.selectbox(
             "Timeline Preset",
             [
                 "🎨 Design Mockup (Oct 25, 2026)",
                 "⚡ Kaggle Dataset Era (Dec 31, 2023)",
                 "🕒 Today's Live Date",
-                "🗓️ Custom Date Selection"
+                "🗓️ Custom Month & Date"
             ],
             index=0
         )
-        
-        # Determine anchor date based on preset or custom choice
-        if "Design Mockup" in timeline_mode:
-            default_date = datetime(2026, 10, 25).date()
-        elif "Kaggle" in timeline_mode:
-            default_date = datetime(2023, 12, 31).date()
-        elif "Today" in timeline_mode:
-            default_date = datetime.now().date()
-        else:
-            default_date = datetime(2026, 10, 25).date()
 
+        # Track preset switches
+        if st.session_state.get("_last_timeline_preset") != timeline_mode:
+            st.session_state["_last_timeline_preset"] = timeline_mode
+            if "Design Mockup" in timeline_mode:
+                st.session_state["sim_date"] = date(2026, 10, 25)
+            elif "Kaggle" in timeline_mode:
+                st.session_state["sim_date"] = date(2023, 12, 31)
+            elif "Today" in timeline_mode:
+                st.session_state["sim_date"] = datetime.now().date()
+
+        # Step Month Buttons (Prev / Next Month)
+        st.markdown("<div style='font-size:0.75rem; font-weight:600; color:#94a3b8; margin-top:0.3rem;'>Step Month</div>", unsafe_allow_html=True)
+        col_m_prev, col_m_next = st.columns(2)
+        with col_m_prev:
+            if st.button("◀ Prev Month", use_container_width=True):
+                cd = st.session_state["sim_date"]
+                m = cd.month - 1
+                y = cd.year
+                if m < 1:
+                    m = 12
+                    y -= 1
+                d = min(cd.day, calendar.monthrange(y, m)[1])
+                st.session_state["sim_date"] = date(y, m, d)
+                st.rerun()
+        with col_m_next:
+            if st.button("Next Month ▶", use_container_width=True):
+                cd = st.session_state["sim_date"]
+                m = cd.month + 1
+                y = cd.year
+                if m > 12:
+                    m = 1
+                    y += 1
+                d = min(cd.day, calendar.monthrange(y, m)[1])
+                st.session_state["sim_date"] = date(y, m, d)
+                st.rerun()
+
+        # Direct Month & Year Dropdown Selectors
+        curr_d = st.session_state["sim_date"]
+        col_month, col_year = st.columns([1.35, 1.0])
+        with col_month:
+            sel_month_name = st.selectbox(
+                "Change Month",
+                options=month_names,
+                index=curr_d.month - 1,
+                help="Select any month to shift all inventory and forecasting models to that period."
+            )
+        with col_year:
+            years_available = list(range(2022, 2028))
+            y_idx = years_available.index(curr_d.year) if curr_d.year in years_available else 4
+            sel_year = st.selectbox("Year", options=years_available, index=y_idx)
+
+        # Synchronize date if Month or Year changed via dropdowns
+        target_month_num = month_names.index(sel_month_name) + 1
+        if target_month_num != curr_d.month or sel_year != curr_d.year:
+            max_d = calendar.monthrange(sel_year, target_month_num)[1]
+            st.session_state["sim_date"] = date(sel_year, target_month_num, min(curr_d.day, max_d))
+            st.rerun()
+
+        # Full Date Picker for exact day adjustments
         anchor_date = st.date_input(
             "Anchor / Simulation Date",
-            value=default_date,
+            value=st.session_state["sim_date"],
             help="The pivot date dividing historical actual demand and forward forecasting."
         )
+        if anchor_date != st.session_state["sim_date"]:
+            st.session_state["sim_date"] = anchor_date
+            st.rerun()
 
         lookback_days = st.slider(
             "Historical Lookback (days)",
@@ -1474,19 +1535,41 @@ elif clean_nav == "Inventory":
     st.markdown("### 📦 Enterprise Inventory Telemetry")
     st.caption("Active stock monitoring, coverage analysis, and stockout vulnerability stratification.")
 
-    inv_c1, inv_c2, inv_c3 = st.columns([1.5, 1.5, 1])
+    inv_c1, inv_c2, inv_c3, inv_c4 = st.columns([1.3, 1.3, 1.4, 0.8])
     with inv_c1:
         cat_filter = st.selectbox("Filter Department", ["All Departments", "Electronics", "Footwear", "Health & Wellness", "Apparel", "Groceries", "Furniture", "Toys"])
     with inv_c2:
         stock_status_filter = st.selectbox("Stock Status", ["All Statuses", "Healthy Stock", "Low Stock / Reorder", "Out of Stock"])
     with inv_c3:
+        inv_month_options = [
+            f"📅 Sync with Simulation ({anchor_date.strftime('%b %Y')})",
+            "Latest Available (Jan 2024)",
+            "Dec 2023", "Nov 2023", "Oct 2023", "Sep 2023",
+            "Aug 2023", "Jul 2023", "Jun 2023", "May 2023",
+            "Apr 2023", "Mar 2023", "Feb 2023", "Jan 2023"
+        ]
+        selected_inv_month = st.selectbox("Inventory Month", inv_month_options, index=0)
+    with inv_c4:
         st.write("")
         st.write("")
-        st.button("🔄 Refresh Telemetry", use_container_width=True)
+        st.button("🔄 Refresh", use_container_width=True)
 
     if kaggle_df is not None and not kaggle_df.empty:
-        latest_d = kaggle_df['Date'].max() if 'Date' in kaggle_df.columns else "2024-01-01"
-        sub_df = kaggle_df[kaggle_df['Date'] == latest_d].copy() if 'Date' in kaggle_df.columns else kaggle_df.head(100).copy()
+        if "Sync" in selected_inv_month:
+            target_mo = anchor_date.strftime("%Y-%m")
+            matching_dates = kaggle_df[kaggle_df['Date'].astype(str).str.startswith(target_mo)]['Date'].unique()
+            chosen_d = max(matching_dates) if len(matching_dates) > 0 else kaggle_df['Date'].max()
+        elif "Latest" in selected_inv_month:
+            chosen_d = kaggle_df['Date'].max()
+        else:
+            try:
+                mo_str = datetime.strptime(selected_inv_month, "%b %Y").strftime("%Y-%m")
+                matching_dates = kaggle_df[kaggle_df['Date'].astype(str).str.startswith(mo_str)]['Date'].unique()
+                chosen_d = max(matching_dates) if len(matching_dates) > 0 else kaggle_df['Date'].max()
+            except Exception:
+                chosen_d = kaggle_df['Date'].max()
+
+        sub_df = kaggle_df[kaggle_df['Date'] == chosen_d].copy() if 'Date' in kaggle_df.columns else kaggle_df.head(100).copy()
         
         display_rows = []
         for _, row in sub_df.iterrows():
@@ -1503,6 +1586,7 @@ elif clean_nav == "Inventory":
                 status = "Healthy Stock"
 
             display_rows.append({
+                "Date": str(row.get('Date', chosen_d)),
                 "SKU": str(row.get('Product ID', 'P0001')),
                 "Store": str(row.get('Store ID', 'S001')),
                 "Category": str(row.get('Category', 'General')),
@@ -1563,7 +1647,7 @@ elif clean_nav == "Forecasting":
     st.markdown("### 📈 Demand Forecasting & Holdout Validation")
     st.caption(f"Chronological time-series forecasting with active horizon ({forecast_horizon} days) and multi-model benchmarking.")
 
-    fc_col1, fc_col2 = st.columns([1.5, 1])
+    fc_col1, fc_col2, fc_col3 = st.columns([1.4, 1.2, 1.0])
     with fc_col1:
         sku_options = ["Wireless Earbuds (Electronics)", "Running Shoes (Footwear)", "Protein Powder (Health)", "Jeans (Apparel)", "Coffee Beans (Groceries)", "P0001 (Kaggle Groceries)", "P0002 (Kaggle Toys)"]
         selected_sku = st.selectbox("Inspect Time Series:", sku_options)
@@ -1571,6 +1655,13 @@ elif clean_nav == "Forecasting":
         model_options = ["Ridge Regression (Lag Features + Trend)", "7-SMA (Simple Moving Average Baseline)"]
         default_model_idx = 0 if "Ridge" in forecast_engine else 1
         selected_model = st.selectbox("Model Type:", model_options, index=default_model_idx)
+    with fc_col3:
+        st.caption("Active Forecast Month")
+        st.markdown(f"""
+        <div style="background:rgba(30, 41, 59, 0.65); border:1px solid rgba(56, 189, 248, 0.3); border-radius:8px; padding:7px 10px; text-align:center;">
+            <span style="font-weight:700; color:#38bdf8; font-size:0.92rem;">📅 {anchor_date.strftime('%B %Y')}</span>
+        </div>
+        """, unsafe_allow_html=True)
 
     horizon = int(forecast_horizon)
     cut_date = pd.Timestamp(anchor_date)
