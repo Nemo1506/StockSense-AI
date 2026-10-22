@@ -34,6 +34,7 @@ from core.workflow import (
     create_stocksense_graph
 )
 from tools.policy_retriever import PolicyRetriever
+from tools.inventory_tools import commit_replenishment_to_csv, commit_single_item_to_csv
 
 
 # ---------------------------------------------------------------------------
@@ -647,6 +648,108 @@ render_html(f"""
 st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
+# LANGGRAPH DYNAMIC STATE MACHINE DAG BUILDER
+# ---------------------------------------------------------------------------
+def build_langgraph_svg_html(agents_active: dict = None) -> str:
+    """
+    Renders an interactive, responsive SVG of the LangGraph StateGraph DAG.
+    Dynamically highlights active vs bypassed agents with custom strokes, fills, and badges.
+    """
+    if agents_active is None:
+        agents_active = {
+            "planner": st.session_state.get("agent_planner_active", True),
+            "forecaster": st.session_state.get("agent_forecaster_active", True),
+            "inventory_risk": st.session_state.get("agent_inventory_risk_active", True),
+            "replenishment": st.session_state.get("agent_replenishment_active", True),
+            "critic": st.session_state.get("agent_critic_active", True),
+        }
+
+    is_p = agents_active.get("planner", True)
+    is_fc = agents_active.get("forecaster", True)
+    is_inv = agents_active.get("inventory_risk", True)
+    is_rep = agents_active.get("replenishment", True)
+    is_crit = agents_active.get("critic", True)
+
+    def _node_style(is_active, active_fill, active_stroke, active_title_clr, active_sub):
+        if is_active:
+            fill = active_fill
+            stroke = active_stroke
+            dash = ""
+            title_clr = active_title_clr
+            sub_text = active_sub
+            sub_clr = "#94a3b8"
+        else:
+            fill = "rgba(30, 41, 59, 0.88)"
+            stroke = "#64748b"
+            dash = 'stroke-dasharray="5,4"'
+            title_clr = "#94a3b8"
+            sub_text = "⏸️ BYPASSED"
+            sub_clr = "#f87171"
+        return fill, stroke, dash, title_clr, sub_text, sub_clr
+
+    p_fill, p_stroke, p_dash, p_tclr, p_sub, p_sclr = _node_style(is_p, "#1e1b4b", "#818cf8", "#c7d2fe", "Profile &amp; Decompose")
+    fc_fill, fc_stroke, fc_dash, fc_tclr, fc_sub, fc_sclr = _node_style(is_fc, "#082f49", "#38bdf8", "#7dd3fc", "Holdout Ridge / 7-SMA")
+    inv_fill, inv_stroke, inv_dash, inv_tclr, inv_sub, inv_sclr = _node_style(is_inv, "#451a03", "#f59e0b", "#fde68a", "Compute D_L &amp; DOC")
+    rep_fill, rep_stroke, rep_dash, rep_tclr, rep_sub, rep_sclr = _node_style(is_rep, "#064e3b", "#10b981", "#a7f3d0", "Q Formula + SOP RAG")
+    crit_fill, crit_stroke, crit_dash, crit_tclr, crit_sub, crit_sclr = _node_style(is_crit, "#4c0519", "#f43f5e", "#fecdd3", "Math Verification")
+
+    return f"""
+    <div class="langgraph-dag-box">
+        <svg width="100%" height="210" viewBox="0 0 1020 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+                <linearGradient id="glowLine" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#38bdf8" />
+                    <stop offset="50%" stop-color="#818cf8" />
+                    <stop offset="100%" stop-color="#34d399" />
+                </linearGradient>
+            </defs>
+            <path d="M 60 70 L 120 70 L 220 70 L 320 70 L 440 70 L 560 70 L 680 70 L 800 70 L 920 70" stroke="url(#glowLine)" stroke-width="3" fill="none" />
+            <path d="M 800 100 Q 680 180 560 100" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="6,4" fill="none" />
+            <text x="680" y="165" fill="#fcd34d" font-size="11" font-weight="600" text-anchor="middle">Bounded Retry Cycle (Max 1 Discrepancy Correction)</text>
+
+            <!-- START NODE -->
+            <rect x="15" y="48" width="70" height="44" rx="22" fill="#0f172a" stroke="#64748b" stroke-width="2"/>
+            <text x="50" y="75" fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle">START</text>
+
+            <!-- 1. PLANNER -->
+            <rect x="120" y="42" width="125" height="56" rx="10" fill="{p_fill}" stroke="{p_stroke}" stroke-width="2" {p_dash}/>
+            <circle cx="233" cy="52" r="3.5" fill="{'#10b981' if is_p else '#ef4444'}" />
+            <text x="182" y="66" fill="{p_tclr}" font-size="12" font-weight="800" text-anchor="middle">1. PLANNER</text>
+            <text x="182" y="83" fill="{p_sclr}" font-size="9" font-weight="{'700' if not is_p else 'normal'}" text-anchor="middle">{p_sub}</text>
+
+            <!-- 2. FORECASTER -->
+            <rect x="275" y="42" width="125" height="56" rx="10" fill="{fc_fill}" stroke="{fc_stroke}" stroke-width="2" {fc_dash}/>
+            <circle cx="388" cy="52" r="3.5" fill="{'#10b981' if is_fc else '#ef4444'}" />
+            <text x="337" y="66" fill="{fc_tclr}" font-size="12" font-weight="800" text-anchor="middle">2. FORECASTER</text>
+            <text x="337" y="83" fill="{fc_sclr}" font-size="9" font-weight="{'700' if not is_fc else 'normal'}" text-anchor="middle">{fc_sub}</text>
+
+            <!-- 3. INVENTORY RISK -->
+            <rect x="430" y="42" width="130" height="56" rx="10" fill="{inv_fill}" stroke="{inv_stroke}" stroke-width="2" {inv_dash}/>
+            <circle cx="548" cy="52" r="3.5" fill="{'#10b981' if is_inv else '#ef4444'}" />
+            <text x="495" y="66" fill="{inv_tclr}" font-size="12" font-weight="800" text-anchor="middle">3. INVENTORY RISK</text>
+            <text x="495" y="83" fill="{inv_sclr}" font-size="9" font-weight="{'700' if not is_inv else 'normal'}" text-anchor="middle">{inv_sub}</text>
+
+            <!-- 4. REPLENISHMENT -->
+            <rect x="590" y="42" width="135" height="56" rx="10" fill="{rep_fill}" stroke="{rep_stroke}" stroke-width="2" {rep_dash}/>
+            <circle cx="713" cy="52" r="3.5" fill="{'#10b981' if is_rep else '#ef4444'}" />
+            <text x="657" y="66" fill="{rep_tclr}" font-size="12" font-weight="800" text-anchor="middle">4. REPLENISHMENT</text>
+            <text x="657" y="83" fill="{rep_sclr}" font-size="9" font-weight="{'700' if not is_rep else 'normal'}" text-anchor="middle">{rep_sub}</text>
+
+            <!-- 5. CRITIC GUARD -->
+            <rect x="755" y="42" width="130" height="56" rx="10" fill="{crit_fill}" stroke="{crit_stroke}" stroke-width="2" {crit_dash}/>
+            <circle cx="873" cy="52" r="3.5" fill="{'#10b981' if is_crit else '#ef4444'}" />
+            <text x="820" y="66" fill="{crit_tclr}" font-size="12" font-weight="800" text-anchor="middle">5. CRITIC GUARD</text>
+            <text x="820" y="83" fill="{crit_sclr}" font-size="9" font-weight="{'700' if not is_crit else 'normal'}" text-anchor="middle">{crit_sub}</text>
+
+            <!-- END NODE -->
+            <rect x="915" y="48" width="75" height="44" rx="22" fill="#064e3b" stroke="#34d399" stroke-width="2"/>
+            <text x="952" y="75" fill="#a7f3d0" font-size="12" font-weight="700" text-anchor="middle">END</text>
+        </svg>
+    </div>
+    """
+
+
+# ---------------------------------------------------------------------------
 # LIVE EXECUTION & SWARM TELEMETRY GRAPH BUILDERS
 # ---------------------------------------------------------------------------
 def build_live_execution_graph(state_dict: dict, active_node: str = "COMPLETED", selected_key: str = None) -> go.Figure:
@@ -785,9 +888,17 @@ def build_live_swarm_telemetry_graph(state_dict: dict, active_node: str = "COMPL
     bar_colors = []
     status_annotations = []
     color_map = {0: "#818cf8", 1: "#38bdf8", 2: "#f59e0b", 3: "#10b981", 4: "#f43f5e"}
+    enabled_map = state_dict.get("user_config", {}).get("agents_enabled", {})
 
     for i, stg_name in enumerate(["1. Planner", "2. Forecaster", "3. Inventory Risk", "4. Replenishment", "5. Critic Guard"]):
-        if i < current_idx:
+        node_k = node_order[i]
+        is_node_enabled = enabled_map.get(node_k, st.session_state.get(f"agent_{node_k}_active", True))
+
+        if not is_node_enabled:
+            pct = 100
+            clr = "#475569"
+            ann = "Bypassed ⏸️"
+        elif i < current_idx:
             pct = 100
             clr = color_map[i]
             ann = "Done ✓"
@@ -840,48 +951,7 @@ if clean_nav == "Dashboard":
         st.markdown("### 🧠 LangGraph State Machine Architecture & Live Execution DAG")
         st.caption("Compiled StateGraph(WorkflowState) with cyclical self-correction, zero-trust critic validation, and deterministic math.")
 
-        render_html("""
-        <div class="langgraph-dag-box">
-            <svg width="100%" height="210" viewBox="0 0 1020 200" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <defs>
-                    <linearGradient id="glowLine" x1="0%" y1="0%" x2="100%" y2="0%">
-                        <stop offset="0%" stop-color="#38bdf8" />
-                        <stop offset="50%" stop-color="#818cf8" />
-                        <stop offset="100%" stop-color="#34d399" />
-                    </linearGradient>
-                </defs>
-                <path d="M 60 70 L 120 70 L 220 70 L 320 70 L 440 70 L 560 70 L 680 70 L 800 70 L 920 70" stroke="url(#glowLine)" stroke-width="3" fill="none" />
-                <path d="M 800 100 Q 680 180 560 100" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="6,4" fill="none" />
-                <text x="680" y="165" fill="#fcd34d" font-size="11" font-weight="600" text-anchor="middle">Bounded Retry Cycle (Max 1 Discrepancy Correction)</text>
-
-                <rect x="15" y="48" width="70" height="44" rx="22" fill="#0f172a" stroke="#64748b" stroke-width="2"/>
-                <text x="50" y="75" fill="#cbd5e1" font-size="12" font-weight="700" text-anchor="middle">START</text>
-
-                <rect x="120" y="42" width="125" height="56" rx="10" fill="#1e1b4b" stroke="#818cf8" stroke-width="2"/>
-                <text x="182" y="66" fill="#c7d2fe" font-size="12" font-weight="800" text-anchor="middle">1. PLANNER</text>
-                <text x="182" y="83" fill="#94a3b8" font-size="9" text-anchor="middle">Profile &amp; Decompose</text>
-
-                <rect x="275" y="42" width="125" height="56" rx="10" fill="#082f49" stroke="#38bdf8" stroke-width="2"/>
-                <text x="337" y="66" fill="#7dd3fc" font-size="12" font-weight="800" text-anchor="middle">2. FORECASTER</text>
-                <text x="337" y="83" fill="#94a3b8" font-size="9" text-anchor="middle">Holdout Ridge / 7-SMA</text>
-
-                <rect x="430" y="42" width="130" height="56" rx="10" fill="#451a03" stroke="#f59e0b" stroke-width="2"/>
-                <text x="495" y="66" fill="#fde68a" font-size="12" font-weight="800" text-anchor="middle">3. INVENTORY RISK</text>
-                <text x="495" y="83" fill="#94a3b8" font-size="9" text-anchor="middle">Compute D_L &amp; DOC</text>
-
-                <rect x="590" y="42" width="135" height="56" rx="10" fill="#064e3b" stroke="#10b981" stroke-width="2"/>
-                <text x="657" y="66" fill="#a7f3d0" font-size="12" font-weight="800" text-anchor="middle">4. REPLENISHMENT</text>
-                <text x="657" y="83" fill="#94a3b8" font-size="9" text-anchor="middle">Q Formula + SOP RAG</text>
-
-                <rect x="755" y="42" width="130" height="56" rx="10" fill="#4c0519" stroke="#f43f5e" stroke-width="2"/>
-                <text x="820" y="66" fill="#fecdd3" font-size="12" font-weight="800" text-anchor="middle">5. CRITIC GUARD</text>
-                <text x="820" y="83" fill="#94a3b8" font-size="9" text-anchor="middle">Math Verification</text>
-
-                <rect x="915" y="48" width="75" height="44" rx="22" fill="#064e3b" stroke="#34d399" stroke-width="2"/>
-                <text x="952" y="75" fill="#a7f3d0" font-size="12" font-weight="700" text-anchor="middle">END</text>
-            </svg>
-        </div>
-        """)
+        render_html(build_langgraph_svg_html())
 
         run_col1, run_col2 = st.columns([3, 1])
         with run_col1:
@@ -980,9 +1050,20 @@ if clean_nav == "Dashboard":
                     last_state["workflow_status"] = "COMPLETED"
                     last_state["critic_approved"] = True
                     last_state["manager_authorized"] = True
+                    # Synchronize replenishment orders to retail_store_inventory.csv and audit ledger
+                    recs_to_commit = last_state.get("recommendations", [])
+                    if recs_to_commit:
+                        csv_res = commit_replenishment_to_csv(
+                            recommendations=recs_to_commit,
+                            csv_path="retail_store_inventory.csv",
+                            orders_csv_path="data/replenishment_orders.csv",
+                            authorized_by="LangGraph Replenishment Swarm"
+                        )
+                        last_state["csv_update_summary"] = csv_res
                     st.session_state["workflow_result"] = last_state
+                    st.cache_data.clear()
 
-                live_status_slot.success("✅ LangGraph Execution Completed! State variables and trace compiled.")
+                live_status_slot.success("✅ LangGraph Execution Completed! State compiled and replenishment orders committed to CSV.")
                 time.sleep(0.6)
                 st.rerun()
 
@@ -1786,7 +1867,21 @@ if clean_nav == "Dashboard":
         """)
 
         if st.button("Apply Recommendation →", key="btn_apply_rec_main", use_container_width=True):
-            st.success("Recommendation Applied: Running Shoes target safety buffer adjusted by +25%.")
+            res_rec = commit_single_item_to_csv(
+                product_id="P0008",
+                product_name="Running Shoes",
+                store_id="S001",
+                category="Footwear",
+                units_ordered=180,
+                unit_cost=45.0,
+                csv_path="retail_store_inventory.csv",
+                orders_csv_path="data/replenishment_orders.csv",
+                authorized_by="Dashboard Operator"
+            )
+            st.cache_data.clear()
+            st.success(f"✅ Recommendation Applied & Saved to CSV: Running Shoes (+180 units) updated in retail_store_inventory.csv and logged to data/replenishment_orders.csv!")
+            time.sleep(0.5)
+            st.rerun()
 
         render_html("""
         <div style="margin-top:0.8rem; font-size:0.75rem;">
@@ -2168,7 +2263,26 @@ elif clean_nav == "Replenishment":
             use_container_width=True
         )
     with col_btn2:
-        st.button("🚀 Transmit POs to Vendor EDI Gateway", use_container_width=True)
+        if st.button("🚀 Transmit POs & Commit Changes to CSV", use_container_width=True, type="primary"):
+            approved_items = edited_po[edited_po["Authorize"] == True]
+            if not approved_items.empty:
+                res_csv = commit_replenishment_to_csv(
+                    recommendations=approved_items,
+                    csv_path="retail_store_inventory.csv",
+                    orders_csv_path="data/replenishment_orders.csv",
+                    authorized_by=manager_signature
+                )
+                st.cache_data.clear()
+                st.success(f"✅ Purchase orders committed to CSV! Updated {res_csv['updated_rows']} record(s) in retail_store_inventory.csv and logged {res_csv['logged_orders']} transaction(s) to data/replenishment_orders.csv.")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                st.warning("⚠️ No purchase orders were checked/authorized for commitment.")
+
+    if os.path.exists("data/replenishment_orders.csv") and os.path.getsize("data/replenishment_orders.csv") > 0:
+        with st.expander("📁 View Persistent Replenishment Orders Audit Ledger (data/replenishment_orders.csv)", expanded=False):
+            df_logged = pd.read_csv("data/replenishment_orders.csv")
+            st.dataframe(df_logged.tail(25), use_container_width=True)
 
 # ===========================================================================
 # VIEW 5: POLICIES & RAG SOP RETRIEVAL
@@ -2192,27 +2306,40 @@ elif clean_nav == "AI Agents":
     st.markdown("### 🤖 Autonomous Multi-Agent Mesh & Operational Control Hub")
     st.caption("Real-time telemetry, manual agent activation/deactivation controls, and decoupled zero-trust critic auditing.")
 
+    AGENT_KEY_MAP = {
+        "agent_planner_active": "tog_planner",
+        "agent_forecaster_active": "tog_forecaster",
+        "agent_inventory_risk_active": "tog_inv_risk",
+        "agent_replenishment_active": "tog_replenishment",
+        "agent_critic_active": "tog_critic",
+        "agent_validator_active": "tog_validator",
+    }
+
+    # Ensure session state and toggle keys are fully synchronized
+    for state_k, tog_k in AGENT_KEY_MAP.items():
+        if state_k not in st.session_state:
+            st.session_state[state_k] = True
+        st.session_state[tog_k] = st.session_state[state_k]
+
+    def _sync_agent(state_key: str, widget_key: str):
+        st.session_state[state_key] = st.session_state[widget_key]
+
     # Master Controls Toolbar
     ctrl_c1, ctrl_c2, ctrl_info = st.columns([1.1, 1.1, 2.2])
     with ctrl_c1:
         if st.button("⚡ Activate All Agents", use_container_width=True):
-            for k in ["agent_planner_active", "agent_forecaster_active", "agent_inventory_risk_active", "agent_replenishment_active", "agent_critic_active", "agent_validator_active"]:
-                st.session_state[k] = True
+            for state_k, tog_k in AGENT_KEY_MAP.items():
+                st.session_state[state_k] = True
+                st.session_state[tog_k] = True
             st.rerun()
     with ctrl_c2:
         if st.button("⏸️ Deactivate All Agents", use_container_width=True):
-            for k in ["agent_planner_active", "agent_forecaster_active", "agent_inventory_risk_active", "agent_replenishment_active", "agent_critic_active", "agent_validator_active"]:
-                st.session_state[k] = False
+            for state_k, tog_k in AGENT_KEY_MAP.items():
+                st.session_state[state_k] = False
+                st.session_state[tog_k] = False
             st.rerun()
 
-    active_count = sum([
-        st.session_state.get("agent_planner_active", True),
-        st.session_state.get("agent_forecaster_active", True),
-        st.session_state.get("agent_inventory_risk_active", True),
-        st.session_state.get("agent_replenishment_active", True),
-        st.session_state.get("agent_critic_active", True),
-        st.session_state.get("agent_validator_active", True)
-    ])
+    active_count = sum([st.session_state.get(k, True) for k in AGENT_KEY_MAP.keys()])
 
     with ctrl_info:
         st.markdown(f"""
@@ -2224,6 +2351,10 @@ elif clean_nav == "AI Agents":
         </div>
         """, unsafe_allow_html=True)
 
+    # Dynamic LangGraph State Machine Architecture DAG
+    st.markdown("<div style='height:0.4rem;'></div>", unsafe_allow_html=True)
+    st.markdown("##### 🧠 Dynamic LangGraph Orchestration Topology")
+    render_html(build_langgraph_svg_html())
     st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
 
     agent_grid_col1, agent_grid_col2, agent_grid_col3 = st.columns(3)
@@ -2245,10 +2376,12 @@ elif clean_nav == "AI Agents":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        new_p = st.toggle("Activate Planner", value=is_p, key="tog_planner")
-        if new_p != is_p:
-            st.session_state["agent_planner_active"] = new_p
-            st.rerun()
+        st.toggle(
+            "Activate Planner",
+            key="tog_planner",
+            on_change=_sync_agent,
+            args=("agent_planner_active", "tog_planner")
+        )
 
     with agent_grid_col2:
         is_fc = st.session_state.get("agent_forecaster_active", True)
@@ -2267,10 +2400,12 @@ elif clean_nav == "AI Agents":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        new_fc = st.toggle("Activate Forecaster", value=is_fc, key="tog_forecaster")
-        if new_fc != is_fc:
-            st.session_state["agent_forecaster_active"] = new_fc
-            st.rerun()
+        st.toggle(
+            "Activate Forecaster",
+            key="tog_forecaster",
+            on_change=_sync_agent,
+            args=("agent_forecaster_active", "tog_forecaster")
+        )
 
     with agent_grid_col3:
         is_inv = st.session_state.get("agent_inventory_risk_active", True)
@@ -2289,10 +2424,12 @@ elif clean_nav == "AI Agents":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        new_inv = st.toggle("Activate Inventory Agent", value=is_inv, key="tog_inv_risk")
-        if new_inv != is_inv:
-            st.session_state["agent_inventory_risk_active"] = new_inv
-            st.rerun()
+        st.toggle(
+            "Activate Inventory Agent",
+            key="tog_inv_risk",
+            on_change=_sync_agent,
+            args=("agent_inventory_risk_active", "tog_inv_risk")
+        )
 
     st.markdown("<div style='height:0.8rem;'></div>", unsafe_allow_html=True)
 
@@ -2315,10 +2452,12 @@ elif clean_nav == "AI Agents":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        new_rep = st.toggle("Activate Replenishment", value=is_rep, key="tog_replenishment")
-        if new_rep != is_rep:
-            st.session_state["agent_replenishment_active"] = new_rep
-            st.rerun()
+        st.toggle(
+            "Activate Replenishment",
+            key="tog_replenishment",
+            on_change=_sync_agent,
+            args=("agent_replenishment_active", "tog_replenishment")
+        )
 
     with agent_grid_col5:
         is_crit = st.session_state.get("agent_critic_active", True)
@@ -2337,10 +2476,12 @@ elif clean_nav == "AI Agents":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        new_crit = st.toggle("Activate Critic Guard", value=is_crit, key="tog_critic")
-        if new_crit != is_crit:
-            st.session_state["agent_critic_active"] = new_crit
-            st.rerun()
+        st.toggle(
+            "Activate Critic Guard",
+            key="tog_critic",
+            on_change=_sync_agent,
+            args=("agent_critic_active", "tog_critic")
+        )
 
     with agent_grid_col6:
         is_val = st.session_state.get("agent_validator_active", True)
@@ -2359,10 +2500,12 @@ elif clean_nav == "AI Agents":
             </div>
         </div>
         """, unsafe_allow_html=True)
-        new_val = st.toggle("Activate Data Validator", value=is_val, key="tog_validator")
-        if new_val != is_val:
-            st.session_state["agent_validator_active"] = new_val
-            st.rerun()
+        st.toggle(
+            "Activate Data Validator",
+            key="tog_validator",
+            on_change=_sync_agent,
+            args=("agent_validator_active", "tog_validator")
+        )
 
 # ===========================================================================
 # VIEW 7: EXECUTIVE REPORTS

@@ -7,12 +7,14 @@ Implements shared state, conditional routing, bounded retry (max 1), and explici
 
 from typing import Dict, List, Any, Optional, TypedDict
 from datetime import datetime
+import math
+import numpy as np
 import pandas as pd
 
 from langgraph.graph import StateGraph, END
 
 from core.data_validation import ColumnMapping, DataProfile, profile_and_validate_dataset
-from core.planner import PlannerAgent, ExecutionPlan
+from core.planner import PlannerAgent, ExecutionPlan, PlanStep
 from core.forecaster import DemandForecastingAgent, ForecastResult
 from core.inventory_agent import InventoryRiskAgent, RiskAssessment
 from core.replenishment_agent import ReplenishmentAgent, ReplenishmentRecommendation
@@ -63,11 +65,19 @@ def planner_node(state: WorkflowState) -> WorkflowState:
         state["clean_df"] = clean_df
         state["execution_plan"] = ExecutionPlan(
             plan_id="PLAN-MANUAL-OVERRIDE",
-            stages=["Direct execution"],
-            can_proceed=True,
+            objective="Autonomous direct execution baseline with planner bypassed.",
+            steps=[
+                PlanStep(step_id=1, name="Data Validation", agent_assigned="Data Validator", tools_required=[], status="COMPLETED"),
+                PlanStep(step_id=2, name="Demand Forecasting", agent_assigned="Demand Forecaster", tools_required=["7-SMA", "Ridge"], status="PENDING"),
+                PlanStep(step_id=3, name="Inventory Risk Analysis", agent_assigned="Inventory Risk Agent", tools_required=["ROP Formula"], status="PENDING"),
+                PlanStep(step_id=4, name="Replenishment Formulation", agent_assigned="Replenishment Agent", tools_required=["Q Formula", "Policy RAG"], status="PENDING"),
+                PlanStep(step_id=5, name="Critic Validation", agent_assigned="Critic Validator", tools_required=["Invariant Auditor"], status="PENDING")
+            ],
+            data_quality_verdict="VALID",
             missing_prerequisites=[],
-            estimated_runtime_seconds=1.0,
-            llm_reasoning="Manual operator override - planner bypassed."
+            assumptions_applied={"planner_bypassed": True},
+            can_proceed=True,
+            llm_rationale="Manual operator override: Planner bypassed by user toggle."
         )
         state["workflow_status"] = "PLANNING"
         return state
@@ -116,8 +126,33 @@ def forecaster_node(state: WorkflowState) -> WorkflowState:
     """Agent 2: Demand Forecaster Node - aggregates sales and predicts demand."""
     enabled = state.get("user_config", {}).get("agents_enabled", {}).get("forecaster", True)
     if not enabled:
-        log_event(state, "Demand Forecaster", "Demand Forecaster is manually deactivated by operator. Skipping forecast calculations.", "WARNING")
-        state["forecast_results"] = {}
+        log_event(state, "Demand Forecaster", "Demand Forecaster is deactivated by operator. Generating autonomous mean sales baselines.", "WARNING")
+        clean_df = state.get("clean_df")
+        horizon_days = state.get("user_config", {}).get("horizon_days", 7)
+        fallback_fc: Dict[str, ForecastResult] = {}
+        if clean_df is not None and not clean_df.empty:
+            for (prod, store), grp in clean_df.groupby(["_product_id", "_store_id"]):
+                sorted_grp = grp.sort_values("_parsed_date")
+                sales = sorted_grp["_parsed_sales"].dropna().tolist()
+                dates = sorted_grp["_parsed_date"].dropna().dt.strftime("%Y-%m-%d").tolist()
+                avg_daily = float(sum(sales) / len(sales)) if sales else 15.0
+                last_dt = pd.to_datetime(dates[-1]) if dates else pd.to_datetime("2024-01-01")
+                fc_dates = pd.date_range(start=last_dt + pd.Timedelta(days=1), periods=horizon_days).strftime("%Y-%m-%d").tolist()
+                fc_sales = [round(avg_daily, 2)] * horizon_days
+                key = f"{prod}::{store}"
+                fallback_fc[key] = ForecastResult(
+                    product_id=str(prod),
+                    store_id=str(store),
+                    historical_dates=dates,
+                    historical_sales=[float(s) for s in sales],
+                    forecast_dates=fc_dates,
+                    forecast_sales=fc_sales,
+                    model_name="Autonomous Baseline (Forecaster Bypassed)",
+                    metrics={"MAE": 0.0, "RMSE": 0.0, "WAPE": 0.0},
+                    average_daily_demand=round(avg_daily, 2)
+                )
+        state["forecast_results"] = fallback_fc
+        log_event(state, "Demand Forecaster", f"Generated {len(fallback_fc)} autonomous baseline series.")
         state["workflow_status"] = "FORECASTING"
         return state
 
@@ -144,8 +179,43 @@ def inventory_risk_node(state: WorkflowState) -> WorkflowState:
     """Agent 3: Inventory Risk Node - computes D_L, DOC, and stratifies stockout risk."""
     enabled = state.get("user_config", {}).get("agents_enabled", {}).get("inventory_risk", True)
     if not enabled:
-        log_event(state, "Inventory Risk Analyst", "Inventory Risk Analyst is manually deactivated by operator. Skipping risk stratification.", "WARNING")
-        state["risk_results"] = {}
+        log_event(state, "Inventory Risk Analyst", "Inventory Risk Analyst is deactivated by operator. Computing autonomous ROP baselines.", "WARNING")
+        lead_time = state.get("user_config", {}).get("lead_time_days", 7)
+        safety_stock = state.get("user_config", {}).get("safety_stock", 14.0)
+        clean_df = state.get("clean_df")
+        default_stock = state.get("user_config", {}).get("default_stock", 40.0)
+        has_inv_col = clean_df is not None and "_parsed_inventory" in clean_df.columns
+
+        fallback_risks: Dict[str, RiskAssessment] = {}
+        for key, fc in state.get("forecast_results", {}).items():
+            cur_stock = default_stock
+            if has_inv_col:
+                sub = clean_df[(clean_df["_product_id"] == fc.product_id) & (clean_df["_store_id"] == fc.store_id)]
+                if not sub.empty:
+                    last_val = sub.sort_values("_parsed_date")["_parsed_inventory"].dropna()
+                    if not last_val.empty:
+                        cur_stock = float(last_val.iloc[-1])
+
+            d_l = round(fc.average_daily_demand * lead_time, 2)
+            rop = round(d_l + safety_stock, 2)
+            doc = round(cur_stock / fc.average_daily_demand, 1) if (cur_stock is not None and fc.average_daily_demand > 0) else None
+            risk_lvl = "High" if (cur_stock is not None and cur_stock < d_l) else ("Medium" if (cur_stock is not None and cur_stock < rop) else "Low")
+
+            fallback_risks[key] = RiskAssessment(
+                product_id=fc.product_id,
+                store_id=fc.store_id,
+                current_stock=cur_stock,
+                lead_time_days=lead_time,
+                safety_stock=safety_stock,
+                lead_time_demand=d_l,
+                reorder_point=rop,
+                days_of_cover=doc,
+                risk_level=risk_lvl,
+                risk_reason=f"Autonomous risk baseline (Risk Agent bypassed): S={cur_stock if cur_stock is not None else 0:.0f}, ROP={rop:.1f}, D_L={d_l:.1f}.",
+                evidence={"lead_time_demand": d_l, "reorder_point": rop, "current_stock": cur_stock, "bypassed": True}
+            )
+        state["risk_results"] = fallback_risks
+        log_event(state, "Inventory Risk Analyst", f"Established {len(fallback_risks)} autonomous inventory risk positions.")
         state["workflow_status"] = "ASSESSING"
         return state
 
@@ -193,8 +263,53 @@ def replenishment_node(state: WorkflowState) -> WorkflowState:
     """Agent 4: Replenishment Node - calculates reorder quantity Q and queries policy RAG."""
     enabled = state.get("user_config", {}).get("agents_enabled", {}).get("replenishment", True)
     if not enabled:
-        log_event(state, "Replenishment Agent", "Replenishment Agent is manually deactivated by operator. Skipping purchase recommendations.", "WARNING")
-        state["recommendations"] = []
+        log_event(state, "Replenishment Agent", "Replenishment Agent is deactivated by operator. Formulating mathematical baseline reorders.", "WARNING")
+        clean_df = state.get("clean_df")
+        default_cost = state.get("user_config", {}).get("default_unit_cost", 3.50)
+        default_incoming = state.get("user_config", {}).get("default_incoming_stock", 0.0)
+
+        fallback_recs: List[ReplenishmentRecommendation] = []
+        for rank_idx, (key, risk) in enumerate(state.get("risk_results", {}).items()):
+            s = risk.current_stock if risk.current_stock is not None else 40.0
+            rop = risk.reorder_point
+            net_def = rop - s - default_incoming
+            q = max(0, int(math.ceil(net_def))) if net_def > 0 else 0
+            cost = round(q * default_cost, 2)
+            cat = "General"
+            if clean_df is not None and "_parsed_category" in clean_df.columns:
+                sub = clean_df[clean_df["_product_id"] == risk.product_id]
+                if not sub.empty:
+                    cat = str(sub["_parsed_category"].iloc[-1])
+
+            rec = ReplenishmentRecommendation(
+                item_key=key,
+                product_id=risk.product_id,
+                store_id=risk.store_id,
+                risk_level=risk.risk_level,
+                current_stock=s,
+                incoming_stock=default_incoming,
+                lead_time_demand=risk.lead_time_demand,
+                safety_stock=risk.safety_stock,
+                reorder_point=rop,
+                proposed_quantity=q,
+                quantity_explanation=f"Autonomous mathematical fallback (Replenishment Agent bypassed): Q=max(0, ceil({rop:.1f} - {s:.0f})) = {q}.",
+                unit_cost=default_cost,
+                estimated_cost=cost,
+                cost_explanation=f"Cost: {q} units * ${default_cost:.2f} = ${cost:.2f}.",
+                urgency_rank=rank_idx + 1,
+                policy_evidence=[{"citation": "Section 3.1 - Baseline Safety Stock Protocol", "content": "Autonomous fallback reorder formula Q=max(0, ROP-S-I)."}],
+                advisory_action=f"Order {q} units (Replenishment Agent Bypassed)" if q > 0 else "Maintain current stock position",
+                category=cat
+            )
+            fallback_recs.append(rec)
+
+        priority_map = {"High": 1, "Medium": 2, "Low": 3}
+        fallback_recs.sort(key=lambda r: (priority_map.get(r.risk_level, 4), -(r.proposed_quantity or 0)))
+        for idx, r in enumerate(fallback_recs):
+            r.urgency_rank = idx + 1
+
+        state["recommendations"] = fallback_recs
+        log_event(state, "Replenishment Agent", f"Formulated {len(fallback_recs)} baseline recommendations.")
         state["workflow_status"] = "REPLENISHING"
         return state
 
@@ -261,15 +376,20 @@ def critic_node(state: WorkflowState) -> WorkflowState:
     enabled = state.get("user_config", {}).get("agents_enabled", {}).get("critic", True)
     if not enabled:
         log_event(state, "Critic / Safety Validator", "Critic Guard is manually deactivated by operator. Validation audit bypassed (auto-authorized).", "WARNING")
+        item_verdicts = {}
+        for rec in state.get("recommendations", []):
+            item_verdicts[rec.item_key] = {
+                "status": "PASS",
+                "reasons": ["Critic agent bypassed by operator: auto-authorized."],
+                "recomputed_q": rec.proposed_quantity,
+                "recomputed_cost": rec.estimated_cost
+            }
         state["validation_result"] = ValidationResult(
-            plan_id=state["execution_plan"].plan_id if state.get("execution_plan") else "PLAN-BYPASSED",
-            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            is_valid=True,
             overall_status="PASS",
-            checks_run={"critic_agent_active": False, "bypass_authorized": True},
-            policy_citations=[],
-            discrepancies=[],
-            retry_count=0
+            item_verdicts=item_verdicts,
+            correction_needed=False,
+            correction_target=None,
+            audit_notes=["Critic Guard deactivated: Zero-trust audit bypassed by operator. All recommendations auto-approved."]
         )
         state["workflow_status"] = "COMPLETED"
         return state
