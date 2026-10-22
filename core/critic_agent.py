@@ -30,6 +30,12 @@ class ValidationResult:
         self.correction_target = correction_target
         self.audit_notes = audit_notes or []
 
+
+    @property
+    def verdict(self) -> str:
+        """Alias for overall_status."""
+        return self.overall_status
+
     @property
     def arithmetic_discrepancies(self) -> List[str]:
         """Extracts arithmetic mismatches or formula deviations across item verdicts."""

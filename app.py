@@ -646,10 +646,192 @@ render_html(f"""
 
 st.markdown("<div style='height: 0.6rem;'></div>", unsafe_allow_html=True)
 
+# ---------------------------------------------------------------------------
+# LIVE EXECUTION & SWARM TELEMETRY GRAPH BUILDERS
+# ---------------------------------------------------------------------------
+def build_live_execution_graph(state_dict: dict, active_node: str = "COMPLETED", selected_key: str = None) -> go.Figure:
+    fig = go.Figure()
+    fc_results = state_dict.get("forecast_results", {})
+    recs = state_dict.get("recommendations", [])
+
+    target_key = selected_key
+    if (not target_key or target_key not in fc_results) and fc_results:
+        rec_match = next((r for r in recs if getattr(r, "risk_level", "") == "High" and getattr(r, "item_key", "") in fc_results), None)
+        if rec_match:
+            target_key = rec_match.item_key
+        else:
+            target_key = next(iter(fc_results.keys()))
+
+    if target_key and target_key in fc_results:
+        fc = fc_results[target_key]
+        rec = next((r for r in recs if getattr(r, "item_key", "") == target_key or (getattr(r, "product_id", "") == getattr(fc, "product_id", "") and getattr(r, "store_id", "") == getattr(fc, "store_id", ""))), None)
+
+        hist_d = fc.historical_dates[-10:] if len(fc.historical_dates) > 10 else fc.historical_dates
+        hist_s = fc.historical_sales[-10:] if len(fc.historical_sales) > 10 else fc.historical_sales
+
+        # 1. Historical Actual Sales
+        fig.add_trace(go.Scatter(
+            x=hist_d, y=hist_s,
+            mode='lines+markers',
+            name='Actual Sales',
+            line=dict(color='#38bdf8', width=2.5),
+            marker=dict(size=5, color='#38bdf8')
+        ))
+
+        # 2. Forecast Demand Curve (active from forecaster onwards)
+        if active_node in ("forecaster", "inventory_risk", "replenishment", "critic", "COMPLETED"):
+            fc_d = fc.forecast_dates[:14]
+            fc_s = fc.forecast_sales[:14]
+            upper_s = [s * 1.15 for s in fc_s]
+            lower_s = [max(0.0, s * 0.85) for s in fc_s]
+
+            fig.add_trace(go.Scatter(
+                x=fc_d + fc_d[::-1],
+                y=upper_s + lower_s[::-1],
+                fill='toself',
+                fillcolor='rgba(168, 85, 247, 0.16)',
+                line=dict(color='rgba(255,255,255,0)'),
+                hoverinfo='skip',
+                showlegend=False
+            ))
+
+            fig.add_trace(go.Scatter(
+                x=fc_d, y=fc_s,
+                mode='lines+markers',
+                name='Agent Forecast',
+                line=dict(color='#a855f7', width=2.5, dash='dash'),
+                marker=dict(size=5, color='#c084fc')
+            ))
+
+        # 3. ROP and Stock lines (active from inventory_risk onwards)
+        if rec and active_node in ("inventory_risk", "replenishment", "critic", "COMPLETED"):
+            rop = getattr(rec, "reorder_point", 45.0)
+            stock = getattr(rec, "current_stock", 40.0)
+            if stock is None:
+                stock = 40.0
+            fig.add_hline(
+                y=rop, line_dash='dot', line_color='#f59e0b', line_width=1.6,
+                annotation_text=f"ROP: {rop:.0f}", annotation_position="top left",
+                annotation_font=dict(color="#fbbf24", size=9)
+            )
+            fig.add_hline(
+                y=stock, line_dash='dashdot', line_color='#10b981', line_width=1.6,
+                annotation_text=f"Stock: {stock:.0f}", annotation_position="bottom left",
+                annotation_font=dict(color="#34d399", size=9)
+            )
+
+        # 4. Replenishment Order Callout Badge (active from replenishment onwards)
+        if rec and active_node in ("replenishment", "critic", "COMPLETED") and getattr(rec, "proposed_quantity", 0):
+            fig.add_annotation(
+                x=fc.forecast_dates[0] if getattr(fc, "forecast_dates", None) else (hist_d[-1] if hist_d else ""),
+                y=max(fc.forecast_sales[0] if getattr(fc, "forecast_sales", None) else 30, getattr(rec, "reorder_point", 45)),
+                text=f"📦 Order Q: +{rec.proposed_quantity} units",
+                showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, arrowcolor="#34d399",
+                ax=0, ay=-32, bgcolor="rgba(16, 185, 129, 0.92)", bordercolor="#059669",
+                font=dict(color="#ffffff", size=9, family="Inter, sans-serif")
+            )
+
+        sku_title = f"<b>{fc.product_id}</b> ({fc.store_id})"
+    else:
+        sample_x = [f"T-{i}" for i in range(7, 0, -1)]
+        sample_y = [24, 28, 26, 31, 29, 35, 38]
+        fig.add_trace(go.Scatter(
+            x=sample_x, y=sample_y,
+            mode='lines+markers', name='Pre-flight History',
+            line=dict(color='#38bdf8', width=2),
+            marker=dict(size=4, color='#38bdf8')
+        ))
+        sku_title = "<b>Pipeline Ingestion & Pre-flight</b>"
+
+    node_labels = {
+        "planner": "🟢 Node 1: Planner Validating",
+        "forecaster": "🟣 Node 2: Forecaster Predicting",
+        "inventory_risk": "🟠 Node 3: Risk Stratifying",
+        "replenishment": "🟢 Node 4: Replenishment Formulating",
+        "critic": "🛡️ Node 5: Critic Auditing Math",
+        "COMPLETED": "✅ Verified & Synchronized"
+    }
+    status_text = node_labels.get(active_node, f"Active: {active_node}")
+
+    fig.update_layout(
+        height=320,
+        margin=dict(l=28, r=15, t=40, b=25),
+        template='plotly_dark',
+        paper_bgcolor='rgba(15, 23, 42, 0.65)',
+        plot_bgcolor='rgba(15, 23, 42, 0.65)',
+        font=dict(family='Inter, sans-serif', size=10, color='#94a3b8'),
+        showlegend=True,
+        legend=dict(
+            orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
+            font=dict(size=9), bgcolor='rgba(0,0,0,0)'
+        ),
+        title=dict(
+            text=f"{sku_title} <span style='font-size:10px; color:#38bdf8; font-weight:normal;'>• {status_text}</span>",
+            font=dict(size=12, color='#f1f5f9'), x=0.02, y=0.96
+        ),
+        xaxis=dict(showgrid=True, gridcolor='rgba(255, 255, 255, 0.05)', tickfont=dict(size=9, color='#64748b'), zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor='rgba(255, 255, 255, 0.05)', tickfont=dict(size=9, color='#64748b'), zeroline=False)
+    )
+    return fig
+
+
+def build_live_swarm_telemetry_graph(state_dict: dict, active_node: str = "COMPLETED") -> go.Figure:
+    fig = go.Figure()
+    stages = ["5. Critic Guard", "4. Replenishment", "3. Inventory Risk", "2. Forecaster", "1. Planner"]
+    node_order = ["planner", "forecaster", "inventory_risk", "replenishment", "critic"]
+    current_idx = node_order.index(active_node) if active_node in node_order else (5 if active_node == "COMPLETED" else 0)
+
+    completion_pcts = []
+    bar_colors = []
+    status_annotations = []
+    color_map = {0: "#818cf8", 1: "#38bdf8", 2: "#f59e0b", 3: "#10b981", 4: "#f43f5e"}
+
+    for i, stg_name in enumerate(["1. Planner", "2. Forecaster", "3. Inventory Risk", "4. Replenishment", "5. Critic Guard"]):
+        if i < current_idx:
+            pct = 100
+            clr = color_map[i]
+            ann = "Done ✓"
+        elif i == current_idx:
+            pct = 75 if active_node != "COMPLETED" else 100
+            clr = "#34d399" if active_node == "COMPLETED" else "#38bdf8"
+            ann = "Active ⚡" if active_node != "COMPLETED" else "Done ✓"
+        else:
+            pct = 0
+            clr = "#334155"
+            ann = "Pending"
+        completion_pcts.append(pct)
+        bar_colors.append(clr)
+        status_annotations.append(ann)
+
+    fig.add_trace(go.Bar(
+        y=stages,
+        x=completion_pcts[::-1],
+        orientation='h',
+        marker=dict(color=bar_colors[::-1], line=dict(color='rgba(255,255,255,0.1)', width=1)),
+        text=status_annotations[::-1],
+        textposition='auto',
+        textfont=dict(size=10, color='#ffffff')
+    ))
+
+    fig.update_layout(
+        height=320,
+        margin=dict(l=105, r=20, t=35, b=25),
+        template='plotly_dark',
+        paper_bgcolor='rgba(15, 23, 42, 0.65)',
+        plot_bgcolor='rgba(15, 23, 42, 0.65)',
+        font=dict(family='Inter, sans-serif', size=10, color='#94a3b8'),
+        title=dict(text='<b>Multi-Agent Swarm Execution Telemetry</b>', font=dict(size=12, color='#f1f5f9'), x=0.02, y=0.96),
+        xaxis=dict(range=[0, 105], ticksuffix="%", showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=False)
+    )
+    return fig
+
+
 # ===========================================================================
 # VIEW 1: DASHBOARD (PRIMARY SCREEN)
 # ===========================================================================
 if clean_nav == "Dashboard":
+
 
     # -----------------------------------------------------------------------
     # LANGGRAPH STATE MACHINE DAG & PIPELINE EXECUTION (WHEN IN DAG MODE)
@@ -711,183 +893,6 @@ if clean_nav == "Dashboard":
             st.write("")
             st.write("")
             trigger_exec = st.button("🚀 EXECUTE LANGGRAPH PIPELINE", type="primary", use_container_width=True)
-
-        # Helper functions for generating small live execution graphs
-        def build_live_execution_graph(state_dict: dict, active_node: str = "COMPLETED", selected_key: str = None) -> go.Figure:
-            fig = go.Figure()
-            fc_results = state_dict.get("forecast_results", {})
-            recs = state_dict.get("recommendations", [])
-            
-            target_key = selected_key
-            if (not target_key or target_key not in fc_results) and fc_results:
-                rec_match = next((r for r in recs if getattr(r, "risk_level", "") == "High" and getattr(r, "item_key", "") in fc_results), None)
-                if rec_match:
-                    target_key = rec_match.item_key
-                else:
-                    target_key = next(iter(fc_results.keys()))
-
-            if target_key and target_key in fc_results:
-                fc = fc_results[target_key]
-                rec = next((r for r in recs if getattr(r, "item_key", "") == target_key or (getattr(r, "product_id", "") == getattr(fc, "product_id", "") and getattr(r, "store_id", "") == getattr(fc, "store_id", ""))), None)
-
-                hist_d = fc.historical_dates[-10:] if len(fc.historical_dates) > 10 else fc.historical_dates
-                hist_s = fc.historical_sales[-10:] if len(fc.historical_sales) > 10 else fc.historical_sales
-                
-                # 1. Historical Actual Sales
-                fig.add_trace(go.Scatter(
-                    x=hist_d, y=hist_s,
-                    mode='lines+markers',
-                    name='Actual Sales',
-                    line=dict(color='#38bdf8', width=2.5),
-                    marker=dict(size=5, color='#38bdf8')
-                ))
-
-                # 2. Forecast Demand Curve (active from forecaster onwards)
-                if active_node in ("forecaster", "inventory_risk", "replenishment", "critic", "COMPLETED"):
-                    fc_d = fc.forecast_dates[:14]
-                    fc_s = fc.forecast_sales[:14]
-                    upper_s = [s * 1.15 for s in fc_s]
-                    lower_s = [max(0.0, s * 0.85) for s in fc_s]
-
-                    fig.add_trace(go.Scatter(
-                        x=fc_d + fc_d[::-1],
-                        y=upper_s + lower_s[::-1],
-                        fill='toself',
-                        fillcolor='rgba(168, 85, 247, 0.16)',
-                        line=dict(color='rgba(255,255,255,0)'),
-                        hoverinfo='skip',
-                        showlegend=False
-                    ))
-
-                    fig.add_trace(go.Scatter(
-                        x=fc_d, y=fc_s,
-                        mode='lines+markers',
-                        name='Agent Forecast',
-                        line=dict(color='#a855f7', width=2.5, dash='dash'),
-                        marker=dict(size=5, color='#c084fc')
-                    ))
-
-                # 3. ROP and Stock lines (active from inventory_risk onwards)
-                if rec and active_node in ("inventory_risk", "replenishment", "critic", "COMPLETED"):
-                    rop = getattr(rec, "reorder_point", 45.0)
-                    stock = getattr(rec, "current_stock", 40.0)
-                    if stock is None:
-                        stock = 40.0
-                    fig.add_hline(
-                        y=rop, line_dash='dot', line_color='#f59e0b', line_width=1.6,
-                        annotation_text=f"ROP: {rop:.0f}", annotation_position="top left",
-                        annotation_font=dict(color="#fbbf24", size=9)
-                    )
-                    fig.add_hline(
-                        y=stock, line_dash='dashdot', line_color='#10b981', line_width=1.6,
-                        annotation_text=f"Stock: {stock:.0f}", annotation_position="bottom left",
-                        annotation_font=dict(color="#34d399", size=9)
-                    )
-
-                # 4. Replenishment Order Callout Badge (active from replenishment onwards)
-                if rec and active_node in ("replenishment", "critic", "COMPLETED") and getattr(rec, "proposed_quantity", 0):
-                    fig.add_annotation(
-                        x=fc.forecast_dates[0] if getattr(fc, "forecast_dates", None) else (hist_d[-1] if hist_d else ""),
-                        y=max(fc.forecast_sales[0] if getattr(fc, "forecast_sales", None) else 30, getattr(rec, "reorder_point", 45)),
-                        text=f"📦 Order Q: +{rec.proposed_quantity} units",
-                        showarrow=True, arrowhead=2, arrowsize=1, arrowwidth=2, arrowcolor="#34d399",
-                        ax=0, ay=-32, bgcolor="rgba(16, 185, 129, 0.92)", bordercolor="#059669",
-                        font=dict(color="#ffffff", size=9, family="Inter, sans-serif")
-                    )
-
-                sku_title = f"<b>{fc.product_id}</b> ({fc.store_id})"
-            else:
-                sample_x = [f"T-{i}" for i in range(7, 0, -1)]
-                sample_y = [24, 28, 26, 31, 29, 35, 38]
-                fig.add_trace(go.Scatter(
-                    x=sample_x, y=sample_y,
-                    mode='lines+markers', name='Pre-flight History',
-                    line=dict(color='#38bdf8', width=2),
-                    marker=dict(size=4, color='#38bdf8')
-                ))
-                sku_title = "<b>Pipeline Ingestion & Pre-flight</b>"
-
-            node_labels = {
-                "planner": "🟢 Node 1: Planner Validating",
-                "forecaster": "🟣 Node 2: Forecaster Predicting",
-                "inventory_risk": "🟠 Node 3: Risk Stratifying",
-                "replenishment": "🟢 Node 4: Replenishment Formulating",
-                "critic": "🛡️ Node 5: Critic Auditing Math",
-                "COMPLETED": "✅ Verified & Synchronized"
-            }
-            status_text = node_labels.get(active_node, f"Active: {active_node}")
-
-            fig.update_layout(
-                height=320,
-                margin=dict(l=28, r=15, t=40, b=25),
-                template='plotly_dark',
-                paper_bgcolor='rgba(15, 23, 42, 0.65)',
-                plot_bgcolor='rgba(15, 23, 42, 0.65)',
-                font=dict(family='Inter, sans-serif', size=10, color='#94a3b8'),
-                showlegend=True,
-                legend=dict(
-                    orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1,
-                    font=dict(size=9), bgcolor='rgba(0,0,0,0)'
-                ),
-                title=dict(
-                    text=f"{sku_title} <span style='font-size:10px; color:#38bdf8; font-weight:normal;'>• {status_text}</span>",
-                    font=dict(size=12, color='#f1f5f9'), x=0.02, y=0.96
-                ),
-                xaxis=dict(showgrid=True, gridcolor='rgba(255, 255, 255, 0.05)', tickfont=dict(size=9, color='#64748b'), zeroline=False),
-                yaxis=dict(showgrid=True, gridcolor='rgba(255, 255, 255, 0.05)', tickfont=dict(size=9, color='#64748b'), zeroline=False)
-            )
-            return fig
-
-        def build_live_swarm_telemetry_graph(state_dict: dict, active_node: str = "COMPLETED") -> go.Figure:
-            fig = go.Figure()
-            stages = ["5. Critic Guard", "4. Replenishment", "3. Inventory Risk", "2. Forecaster", "1. Planner"]
-            node_order = ["planner", "forecaster", "inventory_risk", "replenishment", "critic"]
-            current_idx = node_order.index(active_node) if active_node in node_order else (5 if active_node == "COMPLETED" else 0)
-
-            completion_pcts = []
-            bar_colors = []
-            status_annotations = []
-            color_map = {0: "#818cf8", 1: "#38bdf8", 2: "#f59e0b", 3: "#10b981", 4: "#f43f5e"}
-
-            for i, stg_name in enumerate(["1. Planner", "2. Forecaster", "3. Inventory Risk", "4. Replenishment", "5. Critic Guard"]):
-                if i < current_idx:
-                    pct = 100
-                    clr = color_map[i]
-                    ann = "Done ✓"
-                elif i == current_idx:
-                    pct = 75 if active_node != "COMPLETED" else 100
-                    clr = "#34d399" if active_node == "COMPLETED" else "#38bdf8"
-                    ann = "Active ⚡" if active_node != "COMPLETED" else "Done ✓"
-                else:
-                    pct = 0
-                    clr = "#334155"
-                    ann = "Pending"
-                completion_pcts.append(pct)
-                bar_colors.append(clr)
-                status_annotations.append(ann)
-
-            fig.add_trace(go.Bar(
-                y=stages,
-                x=completion_pcts[::-1],
-                orientation='h',
-                marker=dict(color=bar_colors[::-1], line=dict(color='rgba(255,255,255,0.1)', width=1)),
-                text=status_annotations[::-1],
-                textposition='auto',
-                textfont=dict(size=10, color='#ffffff')
-            ))
-
-            fig.update_layout(
-                height=320,
-                margin=dict(l=105, r=20, t=35, b=25),
-                template='plotly_dark',
-                paper_bgcolor='rgba(15, 23, 42, 0.65)',
-                plot_bgcolor='rgba(15, 23, 42, 0.65)',
-                font=dict(family='Inter, sans-serif', size=10, color='#94a3b8'),
-                title=dict(text='<b>Multi-Agent Swarm Execution Telemetry</b>', font=dict(size=12, color='#f1f5f9'), x=0.02, y=0.96),
-                xaxis=dict(range=[0, 105], ticksuffix="%", showgrid=False, zeroline=False),
-                yaxis=dict(showgrid=False)
-            )
-            return fig
 
         if trigger_exec:
             if kaggle_df is not None and not kaggle_df.empty:
@@ -957,7 +962,7 @@ if clean_nav == "Dashboard":
 
                     # 3. Update TypedDict State in real-time
                     v_res = intermediate_state.get("validation_result")
-                    crit_verdict = v_res.verdict if v_res else ("AUDITING" if node_name == "critic" else "PENDING")
+                    crit_verdict = getattr(v_res, "overall_status", getattr(v_res, "verdict", "PASS")) if v_res else ("AUDITING" if node_name == "critic" else "PENDING")
                     state_slot.json({
                         "workflow_status": intermediate_state.get("workflow_status"),
                         "active_node": f"{node_name}_node",
@@ -978,8 +983,11 @@ if clean_nav == "Dashboard":
                     st.session_state["workflow_result"] = last_state
 
                 live_status_slot.success("✅ LangGraph Execution Completed! State variables and trace compiled.")
+                time.sleep(0.6)
+                st.rerun()
 
         if "workflow_result" in st.session_state and not trigger_exec:
+
             state = st.session_state["workflow_result"]
             state["workflow_status"] = "COMPLETED"
             state["critic_approved"] = True
