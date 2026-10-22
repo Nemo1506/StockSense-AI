@@ -444,6 +444,64 @@ def get_currency_sym() -> str:
         return "₹"
     return "$"
 
+# Initial widget state synchronization (ensures partner widgets never overwrite state)
+for w_key, base_key in [
+    ("sb_lead_time_slider", "lead_time_days"),
+    ("settings_slider_lt", "lead_time_days"),
+    ("sb_safety_stock_slider", "safety_stock"),
+    ("settings_slider_ss", "safety_stock"),
+    ("sb_forecast_horizon_slider", "forecast_horizon"),
+    ("settings_slider_horizon", "forecast_horizon"),
+    ("sb_forecast_engine_select", "forecast_engine"),
+    ("settings_select_engine", "forecast_engine"),
+    ("settings_num_critic", "high_cost_threshold"),
+    ("settings_num_stock", "default_stock"),
+    ("settings_num_cost", "default_unit_cost"),
+    ("settings_select_curr", "default_currency"),
+    ("settings_text_ollama_url", "ollama_url"),
+    ("settings_text_ollama_model", "ollama_model"),
+]:
+    if w_key not in st.session_state:
+        st.session_state[w_key] = st.session_state[base_key]
+
+def sync_from_sidebar_physics():
+    lt = st.session_state.get("sb_lead_time_slider", 7)
+    ss = st.session_state.get("sb_safety_stock_slider", 14)
+    h = st.session_state.get("sb_forecast_horizon_slider", 14)
+    eng = st.session_state.get("sb_forecast_engine_select", "Ridge Regression")
+    st.session_state["lead_time_days"] = lt
+    st.session_state["safety_stock"] = ss
+    st.session_state["forecast_horizon"] = h
+    st.session_state["forecast_engine"] = eng
+    st.session_state["settings_slider_lt"] = lt
+    st.session_state["settings_slider_ss"] = ss
+    st.session_state["settings_slider_horizon"] = h
+    st.session_state["settings_select_engine"] = eng
+
+def sync_from_settings_physics():
+    lt = st.session_state.get("settings_slider_lt", 7)
+    ss = st.session_state.get("settings_slider_ss", 14)
+    h = st.session_state.get("settings_slider_horizon", 14)
+    eng = st.session_state.get("settings_select_engine", "Ridge Regression")
+    st.session_state["lead_time_days"] = lt
+    st.session_state["safety_stock"] = ss
+    st.session_state["forecast_horizon"] = h
+    st.session_state["forecast_engine"] = eng
+    st.session_state["sb_lead_time_slider"] = lt
+    st.session_state["sb_safety_stock_slider"] = ss
+    st.session_state["sb_forecast_horizon_slider"] = h
+    st.session_state["sb_forecast_engine_select"] = eng
+
+def sync_from_settings_governance():
+    st.session_state["high_cost_threshold"] = float(st.session_state.get("settings_num_critic", 10000.0))
+    st.session_state["default_stock"] = float(st.session_state.get("settings_num_stock", 40.0))
+    st.session_state["default_unit_cost"] = float(st.session_state.get("settings_num_cost", 3.50))
+    st.session_state["default_currency"] = st.session_state.get("settings_select_curr", "USD ($)")
+
+def sync_from_settings_llm():
+    st.session_state["ollama_url"] = st.session_state.get("settings_text_ollama_url", "http://localhost:11434")
+    st.session_state["ollama_model"] = st.session_state.get("settings_text_ollama_model", "llama3")
+
 # ---------------------------------------------------------------------------
 # LEFT SIDEBAR NAVIGATION & MISSION CONTROLS
 # ---------------------------------------------------------------------------
@@ -636,47 +694,32 @@ with st.sidebar:
     # Supply Chain Physics Expander — Fully Wired to Session State
     with st.expander("⚡ Supply Chain Physics", expanded=True):
         st.caption("Synchronized with Settings Autonomous Controls ⚡")
-        sb_lt = st.slider(
+        st.slider(
             "Lead Time L (days)", 1, 60,
-            value=int(st.session_state.get("lead_time_days", 7)),
             key="sb_lead_time_slider",
+            on_change=sync_from_sidebar_physics,
             help="Supplier lead time in days. Determines lead time demand D_L = Daily * L."
         )
-        if sb_lt != st.session_state.get("lead_time_days"):
-            st.session_state["lead_time_days"] = sb_lt
-            st.rerun()
 
-        sb_ss = st.slider(
+        st.slider(
             "Safety Stock SS (units)", 0, 200,
-            value=int(st.session_state.get("safety_stock", 14)),
             key="sb_safety_stock_slider",
+            on_change=sync_from_sidebar_physics,
             help="Safety buffer against demand surges. ROP = D_L + SS."
         )
-        if sb_ss != st.session_state.get("safety_stock"):
-            st.session_state["safety_stock"] = sb_ss
-            st.rerun()
 
-        sb_h = st.slider(
+        st.slider(
             "Forecast Horizon H (days)", 7, 90,
-            value=int(st.session_state.get("forecast_horizon", 14)),
             key="sb_forecast_horizon_slider",
+            on_change=sync_from_sidebar_physics,
             help="Future demand forecasting window."
         )
-        if sb_h != st.session_state.get("forecast_horizon"):
-            st.session_state["forecast_horizon"] = sb_h
-            st.rerun()
 
-        sb_engine_opts = ["Ridge Regression", "7-SMA (Baseline)"]
-        curr_sb_eng = st.session_state.get("forecast_engine", "Ridge Regression")
-        sb_eng_idx = sb_engine_opts.index(curr_sb_eng) if curr_sb_eng in sb_engine_opts else 0
-        sb_engine = st.selectbox(
-            "Forecasting Engine", sb_engine_opts,
-            index=sb_eng_idx,
-            key="sb_forecast_engine_select"
+        st.selectbox(
+            "Forecasting Engine", ["Ridge Regression", "7-SMA (Baseline)"],
+            key="sb_forecast_engine_select",
+            on_change=sync_from_sidebar_physics
         )
-        if sb_engine != st.session_state.get("forecast_engine"):
-            st.session_state["forecast_engine"] = sb_engine
-            st.rerun()
 
     # Background Simulation Auto-Advance Runner Fragment
     @st.fragment(run_every="1s")
@@ -2801,16 +2844,33 @@ elif clean_nav == "Settings":
         reset_clicked = st.button("↺ Reset to Factory SOP Defaults", use_container_width=True)
 
     if reset_clicked:
-        st.session_state["lead_time_days"] = 7
-        st.session_state["safety_stock"] = 14
-        st.session_state["forecast_horizon"] = 14
-        st.session_state["forecast_engine"] = "Ridge Regression"
-        st.session_state["high_cost_threshold"] = 10000.0
-        st.session_state["default_stock"] = 40.0
-        st.session_state["default_unit_cost"] = 3.50
-        st.session_state["default_currency"] = "USD ($)"
-        st.session_state["ollama_url"] = "http://localhost:11434"
-        st.session_state["ollama_model"] = "llama3"
+        for k, v in [
+            ("lead_time_days", 7),
+            ("safety_stock", 14),
+            ("forecast_horizon", 14),
+            ("forecast_engine", "Ridge Regression"),
+            ("high_cost_threshold", 10000.0),
+            ("default_stock", 40.0),
+            ("default_unit_cost", 3.50),
+            ("default_currency", "USD ($)"),
+            ("ollama_url", "http://localhost:11434"),
+            ("ollama_model", "llama3"),
+            ("sb_lead_time_slider", 7),
+            ("settings_slider_lt", 7),
+            ("sb_safety_stock_slider", 14),
+            ("settings_slider_ss", 14),
+            ("sb_forecast_horizon_slider", 14),
+            ("settings_slider_horizon", 14),
+            ("sb_forecast_engine_select", "Ridge Regression"),
+            ("settings_select_engine", "Ridge Regression"),
+            ("settings_num_critic", 10000.0),
+            ("settings_num_stock", 40.0),
+            ("settings_num_cost", 3.50),
+            ("settings_select_curr", "USD ($)"),
+            ("settings_text_ollama_url", "http://localhost:11434"),
+            ("settings_text_ollama_model", "llama3"),
+        ]:
+            st.session_state[k] = v
         st.success("✅ Factory SOP Defaults Restored (L=7d, SS=14u, H=14d, Critic Limit=$10k).")
         st.rerun()
 
@@ -2822,16 +2882,16 @@ elif clean_nav == "Settings":
             "Supplier Lead Time L (days)",
             min_value=1,
             max_value=60,
-            value=int(st.session_state.get("lead_time_days", 7)),
             key="settings_slider_lt",
+            on_change=sync_from_settings_physics,
             help="Governs lead-time demand: D_L = Daily Demand * L. When L increases, higher buffer stock is required."
         )
         new_ss = st.slider(
             "Safety Stock Buffer SS (units)",
             min_value=0,
             max_value=200,
-            value=int(st.session_state.get("safety_stock", 14)),
             key="settings_slider_ss",
+            on_change=sync_from_settings_physics,
             help="Buffer against demand variance: ROP = D_L + SS. Directly shifts the reorder point threshold."
         )
     with p_col2:
@@ -2839,18 +2899,15 @@ elif clean_nav == "Settings":
             "Demand Forecast Horizon H (days)",
             min_value=7,
             max_value=90,
-            value=int(st.session_state.get("forecast_horizon", 14)),
             key="settings_slider_horizon",
+            on_change=sync_from_settings_physics,
             help="Number of days forward the Forecaster Agent and Ridge models forecast."
         )
-        engine_options = ["Ridge Regression", "7-SMA (Baseline)"]
-        curr_eng = st.session_state.get("forecast_engine", "Ridge Regression")
-        eng_idx = engine_options.index(curr_eng) if curr_eng in engine_options else 0
         new_engine = st.selectbox(
             "Primary Forecasting Engine",
-            engine_options,
-            index=eng_idx,
+            ["Ridge Regression", "7-SMA (Baseline)"],
             key="settings_select_engine",
+            on_change=sync_from_settings_physics,
             help="Machine learning Ridge Regression with lag features vs. 7-day Simple Moving Average baseline."
         )
 
@@ -2862,37 +2919,35 @@ elif clean_nav == "Settings":
             "Critic Cost Escalation Threshold ($)",
             min_value=500.0,
             max_value=100000.0,
-            value=float(st.session_state.get("high_cost_threshold", 10000.0)),
             step=1000.0,
             key="settings_num_critic",
+            on_change=sync_from_settings_governance,
             help="Autonomous safety ceiling. Any purchase order with Total Cost exceeding this dollar limit is intercepted by the Critic Agent and escalated for Human Store Manager approval."
         )
         curr_opts = ["USD ($)", "EUR (€)", "GBP (£)", "INR (₹)"]
-        curr_val = st.session_state.get("default_currency", "USD ($)")
-        curr_idx = curr_opts.index(curr_val) if curr_val in curr_opts else 0
         new_currency = st.selectbox(
             "System Reporting Currency",
             curr_opts,
-            index=curr_idx,
-            key="settings_select_curr"
+            key="settings_select_curr",
+            on_change=sync_from_settings_governance
         )
     with g_col2:
         new_def_stock = st.number_input(
             "Default SKU Stock Fallback (units)",
             min_value=0.0,
             max_value=1000.0,
-            value=float(st.session_state.get("default_stock", 40.0)),
             step=5.0,
             key="settings_num_stock",
+            on_change=sync_from_settings_governance,
             help="Fallback on-hand stock assumption applied when an uploaded dataset lacks inventory telemetry for a SKU."
         )
         new_def_cost = st.number_input(
             "Default SKU Unit Cost Fallback ($)",
             min_value=0.10,
             max_value=500.0,
-            value=float(st.session_state.get("default_unit_cost", 3.50)),
             step=0.50,
             key="settings_num_cost",
+            on_change=sync_from_settings_governance,
             help="Fallback unit price applied when calculating replenishment purchase order commitments."
         )
 
@@ -2902,15 +2957,15 @@ elif clean_nav == "Settings":
     with l_col1:
         new_ollama_url = st.text_input(
             "Ollama Base URL",
-            value=st.session_state.get("ollama_url", "http://localhost:11434"),
             key="settings_text_ollama_url",
+            on_change=sync_from_settings_llm,
             help="HTTP address where the Ollama local daemon is listening."
         )
     with l_col2:
         new_ollama_model = st.text_input(
             "Model Tag",
-            value=st.session_state.get("ollama_model", "llama3"),
             key="settings_text_ollama_model",
+            on_change=sync_from_settings_llm,
             help="Local model identifier tag (e.g. llama3, mistral, llama3.2)."
         )
     with l_col3:
@@ -2929,34 +2984,13 @@ elif clean_nav == "Settings":
         except Exception:
             st.info("ℹ️ Ollama endpoint offline. Deterministic autonomous fallbacks are active.")
 
-    # Apply changes if changed or if save clicked
-    has_changed = (
-        new_lt != st.session_state.get("lead_time_days") or
-        new_ss != st.session_state.get("safety_stock") or
-        new_horizon != st.session_state.get("forecast_horizon") or
-        new_engine != st.session_state.get("forecast_engine") or
-        new_critic_limit != st.session_state.get("high_cost_threshold") or
-        new_def_stock != st.session_state.get("default_stock") or
-        new_def_cost != st.session_state.get("default_unit_cost") or
-        new_currency != st.session_state.get("default_currency") or
-        new_ollama_url != st.session_state.get("ollama_url") or
-        new_ollama_model != st.session_state.get("ollama_model")
-    )
-
-    if save_clicked or has_changed:
-        st.session_state["lead_time_days"] = new_lt
-        st.session_state["safety_stock"] = new_ss
-        st.session_state["forecast_horizon"] = new_horizon
-        st.session_state["forecast_engine"] = new_engine
-        st.session_state["high_cost_threshold"] = new_critic_limit
-        st.session_state["default_stock"] = new_def_stock
-        st.session_state["default_unit_cost"] = new_def_cost
-        st.session_state["default_currency"] = new_currency
-        st.session_state["ollama_url"] = new_ollama_url
-        st.session_state["ollama_model"] = new_ollama_model
-        if save_clicked:
-            st.success("✅ All autonomous parameters saved & applied! Supply chain physics and LangGraph pipeline updated.")
-            st.rerun()
+    if save_clicked:
+        sync_from_settings_physics()
+        sync_from_settings_governance()
+        sync_from_settings_llm()
+        st.toast("✅ Autonomous parameters saved & applied!")
+        st.success("✅ All autonomous parameters saved & applied! Supply chain physics and LangGraph pipeline updated.")
+        st.rerun()
 
     # SECTION 4: DATA TELEMETRY CHANNELS
     st.markdown("#### 📂 4. Dataset Telemetry & Custom Ingestion")
