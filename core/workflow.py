@@ -372,6 +372,40 @@ def create_stocksense_graph() -> StateGraph:
     return builder.compile()
 
 
+def stream_stocksense_workflow(
+    df: pd.DataFrame,
+    mapping: ColumnMapping,
+    user_config: Dict[str, Any],
+    user_request: str = "Analyze inventory stockout risks and recommend replenishment quantities"
+):
+    """
+    Generator yielding (node_name, current_state) after each agent node execution
+    in the LangGraph StateGraph pipeline.
+    """
+    initial_state: WorkflowState = {
+        "user_request": user_request,
+        "raw_df": df,
+        "column_mapping": mapping,
+        "user_config": user_config,
+        "data_profile": None,
+        "clean_df": None,
+        "execution_plan": None,
+        "forecast_results": {},
+        "risk_results": {},
+        "recommendations": [],
+        "validation_result": None,
+        "retry_count": 0,
+        "logs": [],
+        "errors": [],
+        "workflow_status": "STARTED"
+    }
+
+    graph = create_stocksense_graph()
+    for step in graph.stream(initial_state):
+        for node_name, state in step.items():
+            yield node_name, state
+
+
 def run_stocksense_workflow(
     df: pd.DataFrame,
     mapping: ColumnMapping,
@@ -379,7 +413,7 @@ def run_stocksense_workflow(
     user_request: str = "Analyze inventory stockout risks and recommend replenishment quantities"
 ) -> WorkflowState:
     """
-    Main entry point for running the end-to-end multi-agent LangGraph pipeline.
+    Main entry point for running the end-to-end multi-agent LangGraph pipeline synchronously.
     """
     initial_state: WorkflowState = {
         "user_request": user_request,
@@ -402,3 +436,4 @@ def run_stocksense_workflow(
     graph = create_stocksense_graph()
     final_state = graph.invoke(initial_state)
     return final_state
+
