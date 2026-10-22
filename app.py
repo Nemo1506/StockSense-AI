@@ -403,6 +403,48 @@ def get_dynamic_supply_chain_state(horizon: int, lead_time: int, ss: int, engine
 
 
 # ---------------------------------------------------------------------------
+# GLOBAL AUTONOMOUS PARAMETERS & STATE INITIALIZATION
+# ---------------------------------------------------------------------------
+if "lead_time_days" not in st.session_state:
+    st.session_state["lead_time_days"] = 7
+if "safety_stock" not in st.session_state:
+    st.session_state["safety_stock"] = 14
+if "forecast_horizon" not in st.session_state:
+    st.session_state["forecast_horizon"] = 14
+if "forecast_engine" not in st.session_state:
+    st.session_state["forecast_engine"] = "Ridge Regression"
+if "high_cost_threshold" not in st.session_state:
+    st.session_state["high_cost_threshold"] = 10000.0
+if "default_stock" not in st.session_state:
+    st.session_state["default_stock"] = 40.0
+if "default_unit_cost" not in st.session_state:
+    st.session_state["default_unit_cost"] = 3.50
+if "default_currency" not in st.session_state:
+    st.session_state["default_currency"] = "USD ($)"
+if "ollama_url" not in st.session_state:
+    st.session_state["ollama_url"] = "http://localhost:11434"
+if "ollama_model" not in st.session_state:
+    st.session_state["ollama_model"] = "llama3"
+if "auto_advance_sim" not in st.session_state:
+    st.session_state["auto_advance_sim"] = False
+if "sim_speed_choice" not in st.session_state:
+    st.session_state["sim_speed_choice"] = "Standard (Every 4s +1 Day)"
+if "_last_sim_tick_time" not in st.session_state:
+    st.session_state["_last_sim_tick_time"] = time.time()
+if "sim_date" not in st.session_state:
+    st.session_state["sim_date"] = date(2026, 10, 25)
+
+def get_currency_sym() -> str:
+    cur = st.session_state.get("default_currency", "USD ($)")
+    if "EUR" in cur or "€" in cur:
+        return "€"
+    elif "GBP" in cur or "£" in cur:
+        return "£"
+    elif "INR" in cur or "₹" in cur:
+        return "₹"
+    return "$"
+
+# ---------------------------------------------------------------------------
 # LEFT SIDEBAR NAVIGATION & MISSION CONTROLS
 # ---------------------------------------------------------------------------
 with st.sidebar:
@@ -444,8 +486,25 @@ with st.sidebar:
             "July", "August", "September", "October", "November", "December"
         ]
 
-        if "sim_date" not in st.session_state:
-            st.session_state["sim_date"] = date(2026, 10, 25)
+        # Live Clock Display Card in Sidebar
+        now_time_init = datetime.now().strftime("%I:%M:%S %p")
+        sim_curr_date_str = st.session_state["sim_date"].strftime("%b %d, %Y")
+        render_html(f"""
+        <div style="background:rgba(15,23,42,0.7); border:1px solid rgba(56,189,248,0.25); border-radius:10px; padding:0.6rem 0.8rem; margin-bottom:0.75rem;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-size:0.7rem; color:#94a3b8; text-transform:uppercase; letter-spacing:0.06em; font-weight:700;">Live Simulation Clock</div>
+                <div style="display:flex; align-items:center; gap:4px; font-size:0.68rem; color:#10b981; font-weight:700;">
+                    <span class="live-dot"></span> <span id="sb-clock-status">{"AUTO-STEP" if st.session_state.get("auto_advance_sim") else "LIVE"}</span>
+                </div>
+            </div>
+            <div id="stocksense-sidebar-clock" style="font-size:1.15rem; font-weight:800; color:#ffffff; font-family:monospace; margin-top:0.25rem;">
+                {now_time_init}
+            </div>
+            <div style="font-size:0.73rem; color:#38bdf8; margin-top:0.15rem;">
+                Anchor Date: <b id="stocksense-sidebar-anchor">{sim_curr_date_str}</b>
+            </div>
+        </div>
+        """)
 
         timeline_mode = st.selectbox(
             "Timeline Preset",
@@ -467,6 +526,46 @@ with st.sidebar:
                 st.session_state["sim_date"] = date(2023, 12, 31)
             elif "Today" in timeline_mode:
                 st.session_state["sim_date"] = datetime.now().date()
+
+        # If locked to Today's Live Date, automatically stay updated
+        if "Today" in timeline_mode:
+            today_live = datetime.now().date()
+            if st.session_state["sim_date"] != today_live:
+                st.session_state["sim_date"] = today_live
+
+        # Automatic Timeline Simulation Controls
+        st.markdown("<div style='font-size:0.75rem; font-weight:700; color:#38bdf8; margin-top:0.3rem;'>⚡ Automatic Simulation Progression</div>", unsafe_allow_html=True)
+        auto_adv = st.toggle(
+            "Auto-Advance Timeline Simulation",
+            value=bool(st.session_state.get("auto_advance_sim", False)),
+            key="sb_auto_advance_toggle",
+            help="When activated, automatically steps simulation forward day-by-day, recalculating stock depletion and reorder triggers live."
+        )
+        if auto_adv != st.session_state.get("auto_advance_sim", False):
+            st.session_state["auto_advance_sim"] = auto_adv
+            st.rerun()
+
+        speed_opts = ["Fast (Every 2s +1 Day)", "Standard (Every 4s +1 Day)", "Deliberate (Every 8s +1 Day)"]
+        curr_spd = st.session_state.get("sim_speed_choice", "Standard (Every 4s +1 Day)")
+        spd_idx = speed_opts.index(curr_spd) if curr_spd in speed_opts else 1
+        sel_spd = st.selectbox("Simulation Step Speed", speed_opts, index=spd_idx, key="sb_sim_speed_select")
+        if sel_spd != st.session_state.get("sim_speed_choice"):
+            st.session_state["sim_speed_choice"] = sel_spd
+
+        # Quick Step Days (Manual)
+        col_d_prev, col_d_today, col_d_next = st.columns([1, 1, 1])
+        with col_d_prev:
+            if st.button("⏮️ -1 Day", use_container_width=True, help="Step timeline back 1 day"):
+                st.session_state["sim_date"] = st.session_state["sim_date"] - timedelta(days=1)
+                st.rerun()
+        with col_d_today:
+            if st.button("🕒 Today", use_container_width=True, help="Reset anchor to current live date"):
+                st.session_state["sim_date"] = datetime.now().date()
+                st.rerun()
+        with col_d_next:
+            if st.button("+1 Day ⏭️", use_container_width=True, help="Step timeline forward 1 day"):
+                st.session_state["sim_date"] = st.session_state["sim_date"] + timedelta(days=1)
+                st.rerun()
 
         # Step Month Buttons (Prev / Next Month)
         st.markdown("<div style='font-size:0.75rem; font-weight:600; color:#94a3b8; margin-top:0.3rem;'>Step Month</div>", unsafe_allow_html=True)
@@ -534,11 +633,70 @@ with st.sidebar:
             help="Number of historical days to inspect prior to the anchor date."
         )
 
+    # Supply Chain Physics Expander — Fully Wired to Session State
     with st.expander("⚡ Supply Chain Physics", expanded=True):
-        lead_time_days = st.slider("Lead Time L (days)", 1, 30, 7)
-        safety_stock = st.slider("Safety Stock SS (units)", 0, 100, 14)
-        forecast_horizon = st.slider("Forecast Horizon H (days)", 7, 60, 14)
-        forecast_engine = st.selectbox("Forecasting Engine", ["Ridge Regression", "7-SMA (Baseline)"])
+        st.caption("Synchronized with Settings Autonomous Controls ⚡")
+        sb_lt = st.slider(
+            "Lead Time L (days)", 1, 60,
+            value=int(st.session_state.get("lead_time_days", 7)),
+            key="sb_lead_time_slider",
+            help="Supplier lead time in days. Determines lead time demand D_L = Daily * L."
+        )
+        if sb_lt != st.session_state.get("lead_time_days"):
+            st.session_state["lead_time_days"] = sb_lt
+            st.rerun()
+
+        sb_ss = st.slider(
+            "Safety Stock SS (units)", 0, 200,
+            value=int(st.session_state.get("safety_stock", 14)),
+            key="sb_safety_stock_slider",
+            help="Safety buffer against demand surges. ROP = D_L + SS."
+        )
+        if sb_ss != st.session_state.get("safety_stock"):
+            st.session_state["safety_stock"] = sb_ss
+            st.rerun()
+
+        sb_h = st.slider(
+            "Forecast Horizon H (days)", 7, 90,
+            value=int(st.session_state.get("forecast_horizon", 14)),
+            key="sb_forecast_horizon_slider",
+            help="Future demand forecasting window."
+        )
+        if sb_h != st.session_state.get("forecast_horizon"):
+            st.session_state["forecast_horizon"] = sb_h
+            st.rerun()
+
+        sb_engine_opts = ["Ridge Regression", "7-SMA (Baseline)"]
+        curr_sb_eng = st.session_state.get("forecast_engine", "Ridge Regression")
+        sb_eng_idx = sb_engine_opts.index(curr_sb_eng) if curr_sb_eng in sb_engine_opts else 0
+        sb_engine = st.selectbox(
+            "Forecasting Engine", sb_engine_opts,
+            index=sb_eng_idx,
+            key="sb_forecast_engine_select"
+        )
+        if sb_engine != st.session_state.get("forecast_engine"):
+            st.session_state["forecast_engine"] = sb_engine
+            st.rerun()
+
+    # Background Simulation Auto-Advance Runner Fragment
+    @st.fragment(run_every="1s")
+    def run_simulation_auto_advance():
+        if st.session_state.get("auto_advance_sim", False):
+            speed_map = {"Fast": 2.0, "Standard": 4.0, "Deliberate": 8.0}
+            choice = st.session_state.get("sim_speed_choice", "Standard")
+            interval = 4.0
+            for k, v in speed_map.items():
+                if k in choice:
+                    interval = v
+                    break
+            now_ts = time.time()
+            last_ts = st.session_state.get("_last_sim_tick_time", 0.0)
+            if now_ts - last_ts >= interval:
+                st.session_state["_last_sim_tick_time"] = now_ts
+                st.session_state["sim_date"] = st.session_state["sim_date"] + timedelta(days=1)
+                st.rerun(scope="app")
+
+    run_simulation_auto_advance()
 
     brain_img_html = f'<img src="data:image/jpeg;base64,{brain_b64}" style="width:52px; height:52px; border-radius:50%; box-shadow:0 0 15px rgba(56,189,248,0.5); margin-bottom:0.6rem;" />' if brain_b64 else '<div style="font-size:2.2rem; margin-bottom:0.4rem;">🧠</div>'
     
@@ -550,6 +708,20 @@ with st.sidebar:
         <div style="font-size:0.75rem; color:#94a3b8; margin-top:0.35rem; line-height:1.35;">Autonomous agents.<br>Smarter inventory.</div>
     </div>
     """)
+
+# Single source of truth pulled directly from session state
+anchor_date = st.session_state["sim_date"]
+lead_time_days = int(st.session_state.get("lead_time_days", 7))
+safety_stock = float(st.session_state.get("safety_stock", 14))
+forecast_horizon = int(st.session_state.get("forecast_horizon", 14))
+forecast_engine = st.session_state.get("forecast_engine", "Ridge Regression")
+high_cost_threshold = float(st.session_state.get("high_cost_threshold", 10000.0))
+default_stock = float(st.session_state.get("default_stock", 40.0))
+default_unit_cost = float(st.session_state.get("default_unit_cost", 3.50))
+default_currency = st.session_state.get("default_currency", "USD ($)")
+ollama_url = st.session_state.get("ollama_url", "http://localhost:11434")
+ollama_model = st.session_state.get("ollama_model", "llama3")
+cur_sym = get_currency_sym()
 
 # ---------------------------------------------------------------------------
 # TOP HEADER BAR
@@ -579,15 +751,33 @@ with col_h_mid:
 
 with col_h_right:
     current_time_str = anchor_date.strftime("%b %d, %Y")
-    current_hour_str = datetime.now().strftime("%I:%M %p")
-    tag_mode = "Mockup" if "Mockup" in timeline_mode else ("Kaggle" if "Kaggle" in timeline_mode else ("Today" if "Today" in timeline_mode else "Custom"))
+    current_hour_str = datetime.now().strftime("%I:%M:%S %p")
+    is_sim_auto = st.session_state.get("auto_advance_sim", False)
+    if is_sim_auto:
+        tag_mode = "Auto-Advancing"
+        tag_color = "#34d399"
+    elif "Today" in timeline_mode:
+        tag_mode = "Live Realtime"
+        tag_color = "#38bdf8"
+    elif "Mockup" in timeline_mode:
+        tag_mode = "Mockup Mode"
+        tag_color = "#a78bfa"
+    else:
+        tag_mode = "Custom Sim"
+        tag_color = "#fbbf24"
+
     render_html(f"""
     <div class="header-right-badges" style="justify-content: flex-end;">
-        <div class="header-date-badge">
-            <span style="font-size:14px;">📅</span>
+        <div class="header-date-badge" id="stocksense-header-clock-box">
+            <span style="font-size:15px;">📅</span>
             <div>
-                <div style="font-weight:600; color:#f1f5f9;">{current_time_str}</div>
-                <div style="font-size:0.68rem; color:#64748b;">Clock: {tag_mode} &bull; {current_hour_str}</div>
+                <div id="stocksense-header-date" style="font-weight:700; color:#f1f5f9; font-size:0.86rem;">{current_time_str}</div>
+                <div style="font-size:0.68rem; color:#94a3b8; display:flex; align-items:center; gap:4px;">
+                    <span style="color:{tag_color}; font-weight:700;">Clock: {tag_mode}</span>
+                    <span>&bull;</span>
+                    <span id="stocksense-header-time" style="color:#ffffff; font-weight:700; font-family:monospace; letter-spacing:0.02em;">{current_hour_str}</span>
+                    <span class="live-dot" style="margin-left:2px;" title="Clock Live Auto-Updating"></span>
+                </div>
             </div>
         </div>
         <div class="header-user-badge">
@@ -599,6 +789,38 @@ with col_h_right:
             🌙
         </div>
     </div>
+    """)
+
+    render_html("""
+    <script>
+    (function() {
+        function formatClock(d) {
+            let h = d.getHours();
+            let m = d.getMinutes();
+            let s = d.getSeconds();
+            let ampm = h >= 12 ? 'PM' : 'AM';
+            h = h % 12;
+            h = h ? h : 12;
+            let padH = h < 10 ? '0' + h : h;
+            let padM = m < 10 ? '0' + m : m;
+            let padS = s < 10 ? '0' + s : s;
+            return padH + ':' + padM + ':' + padS + ' ' + ampm;
+        }
+        function tickAllClocks() {
+            const now = new Date();
+            const timeStr = formatClock(now);
+            const elHead = document.getElementById("stocksense-header-time");
+            if (elHead) elHead.textContent = timeStr;
+            const elSb = document.getElementById("stocksense-sidebar-clock");
+            if (elSb) elSb.textContent = timeStr;
+        }
+        tickAllClocks();
+        if (window._stocksense_live_timer) {
+            clearInterval(window._stocksense_live_timer);
+        }
+        window._stocksense_live_timer = setInterval(tickAllClocks, 1000);
+    })();
+    </script>
     """)
 
 st.markdown("<div style='height: 0.5rem;'></div>", unsafe_allow_html=True)
@@ -630,10 +852,18 @@ with ctrl_c2:
         label_visibility="collapsed"
     )
 
+is_sim_running = st.session_state.get("auto_advance_sim", False)
+sim_badge_html = (
+    '<span style="background:rgba(16,185,129,0.18); border:1px solid #10b981; color:#34d399; font-size:0.7rem; font-weight:700; padding:2px 8px; border-radius:12px; display:inline-flex; align-items:center; gap:4px;"><span class="live-dot"></span> SIMULATION AUTO-ADVANCING (+1 Day/tick)</span>'
+    if is_sim_running else
+    '<span style="background:rgba(56,189,248,0.1); border:1px solid rgba(56,189,248,0.3); color:#38bdf8; font-size:0.7rem; font-weight:600; padding:2px 8px; border-radius:12px;">SIMULATION CLOCK READY</span>'
+)
+
 render_html(f"""
 <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:0.5rem; background:rgba(13, 21, 38, 0.65); border:1px solid rgba(59, 130, 246, 0.18); border-radius:10px; padding:0.4rem 0.85rem; margin-top:0.4rem; margin-bottom:0.6rem; font-size:0.76rem;">
-    <div style="display:flex; align-items:center; gap:0.5rem; color:#94a3b8;">
+    <div style="display:flex; align-items:center; gap:0.55rem; color:#94a3b8;">
         <span>⏱️ <b>Active Timeline Window:</b></span>
+        {sim_badge_html}
     </div>
     <div style="display:flex; align-items:center; gap:0.55rem; color:#cbd5e1;">
         <span style="color:#38bdf8; font-weight:600;">⏮️ {hist_start_str}</span>
@@ -968,16 +1198,17 @@ if clean_nav == "Dashboard":
             if kaggle_df is not None and not kaggle_df.empty:
                 mapping = auto_detect_columns(list(kaggle_df.columns))
                 user_config = {
-                    "lead_time_days": lead_time_days,
-                    "safety_stock": safety_stock,
-                    "default_stock": 40.0,
-                    "default_unit_cost": 3.50,
+                    "lead_time_days": int(st.session_state.get("lead_time_days", 7)),
+                    "safety_stock": float(st.session_state.get("safety_stock", 14)),
+                    "default_stock": float(st.session_state.get("default_stock", 40.0)),
+                    "default_unit_cost": float(st.session_state.get("default_unit_cost", 3.50)),
                     "default_incoming_stock": 0.0,
-                    "forecast_model": "Ridge Regression",
-                    "horizon_days": forecast_horizon,
-                    "high_cost_threshold": 10000.0,
-                    "ollama_url": "http://localhost:11434",
-                    "ollama_model": "llama3",
+                    "forecast_model": st.session_state.get("forecast_engine", "Ridge Regression"),
+                    "horizon_days": int(st.session_state.get("forecast_horizon", 14)),
+                    "high_cost_threshold": float(st.session_state.get("high_cost_threshold", 10000.0)),
+                    "ollama_url": st.session_state.get("ollama_url", "http://localhost:11434"),
+                    "ollama_model": st.session_state.get("ollama_model", "llama3"),
+                    "default_currency": st.session_state.get("default_currency", "USD ($)"),
                     "agents_enabled": {
                         "planner": st.session_state.get("agent_planner_active", True),
                         "forecaster": st.session_state.get("agent_forecaster_active", True),
@@ -2549,27 +2780,246 @@ elif clean_nav == "Reports":
 # ===========================================================================
 elif clean_nav == "Settings":
     st.markdown("### ⚙️ Mission Control & Parameter Configuration")
-    st.caption("Adjust system physics, local LLM endpoints, and dataset telemetry channels.")
+    st.caption("Centrally calibrate autonomous supply chain physics, critic guardrail thresholds, local LLM endpoints, and data telemetry.")
 
-    st.subheader("Data Channels")
+    render_html("""
+    <div style="background:linear-gradient(135deg, rgba(56, 189, 248, 0.12), rgba(129, 140, 248, 0.08)); border:1px solid rgba(56, 189, 248, 0.35); border-radius:12px; padding:1rem 1.25rem; margin-bottom:1.5rem;">
+        <div style="display:flex; align-items:center; gap:0.6rem; color:#38bdf8; font-weight:700; font-size:0.95rem;">
+            <span>⚡</span> Autonomous State Engine: Fully Connected &amp; Synchronized
+        </div>
+        <div style="font-size:0.82rem; color:#cbd5e1; margin-top:0.35rem; line-height:1.45;">
+            All parameter modifications made here immediately persist to <code>st.session_state</code>, bi-directionally sync with the sidebar controls, and reactively govern demand forecasting models, safety buffer physics (<code>D_L = d &times; L</code>, <code>ROP = D_L + SS</code>), and zero-trust Critic order escalation rules across all active dashboards and LangGraph state machines.
+        </div>
+    </div>
+    """)
+
+    # Top Quick Action Bar
+    btn_col1, btn_col2, btn_col3 = st.columns([1.5, 1.5, 3])
+    with btn_col1:
+        save_clicked = st.button("💾 Save & Apply Parameters", type="primary", use_container_width=True)
+    with btn_col2:
+        reset_clicked = st.button("↺ Reset to Factory SOP Defaults", use_container_width=True)
+
+    if reset_clicked:
+        st.session_state["lead_time_days"] = 7
+        st.session_state["safety_stock"] = 14
+        st.session_state["forecast_horizon"] = 14
+        st.session_state["forecast_engine"] = "Ridge Regression"
+        st.session_state["high_cost_threshold"] = 10000.0
+        st.session_state["default_stock"] = 40.0
+        st.session_state["default_unit_cost"] = 3.50
+        st.session_state["default_currency"] = "USD ($)"
+        st.session_state["ollama_url"] = "http://localhost:11434"
+        st.session_state["ollama_model"] = "llama3"
+        st.success("✅ Factory SOP Defaults Restored (L=7d, SS=14u, H=14d, Critic Limit=$10k).")
+        st.rerun()
+
+    # SECTION 1: AUTONOMOUS PHYSICS
+    st.markdown("#### ⚡ 1. Autonomous Supply Chain Physics & Forecasting")
+    p_col1, p_col2 = st.columns(2)
+    with p_col1:
+        new_lt = st.slider(
+            "Supplier Lead Time L (days)",
+            min_value=1,
+            max_value=60,
+            value=int(st.session_state.get("lead_time_days", 7)),
+            key="settings_slider_lt",
+            help="Governs lead-time demand: D_L = Daily Demand * L. When L increases, higher buffer stock is required."
+        )
+        new_ss = st.slider(
+            "Safety Stock Buffer SS (units)",
+            min_value=0,
+            max_value=200,
+            value=int(st.session_state.get("safety_stock", 14)),
+            key="settings_slider_ss",
+            help="Buffer against demand variance: ROP = D_L + SS. Directly shifts the reorder point threshold."
+        )
+    with p_col2:
+        new_horizon = st.slider(
+            "Demand Forecast Horizon H (days)",
+            min_value=7,
+            max_value=90,
+            value=int(st.session_state.get("forecast_horizon", 14)),
+            key="settings_slider_horizon",
+            help="Number of days forward the Forecaster Agent and Ridge models forecast."
+        )
+        engine_options = ["Ridge Regression", "7-SMA (Baseline)"]
+        curr_eng = st.session_state.get("forecast_engine", "Ridge Regression")
+        eng_idx = engine_options.index(curr_eng) if curr_eng in engine_options else 0
+        new_engine = st.selectbox(
+            "Primary Forecasting Engine",
+            engine_options,
+            index=eng_idx,
+            key="settings_select_engine",
+            help="Machine learning Ridge Regression with lag features vs. 7-day Simple Moving Average baseline."
+        )
+
+    # SECTION 2: ZERO-TRUST CRITIC & CORPORATE SOP GOVERNANCE
+    st.markdown("#### 🛡️ 2. Zero-Trust Critic Guardrails & Governance Limits")
+    g_col1, g_col2 = st.columns(2)
+    with g_col1:
+        new_critic_limit = st.number_input(
+            "Critic Cost Escalation Threshold ($)",
+            min_value=500.0,
+            max_value=100000.0,
+            value=float(st.session_state.get("high_cost_threshold", 10000.0)),
+            step=1000.0,
+            key="settings_num_critic",
+            help="Autonomous safety ceiling. Any purchase order with Total Cost exceeding this dollar limit is intercepted by the Critic Agent and escalated for Human Store Manager approval."
+        )
+        curr_opts = ["USD ($)", "EUR (€)", "GBP (£)", "INR (₹)"]
+        curr_val = st.session_state.get("default_currency", "USD ($)")
+        curr_idx = curr_opts.index(curr_val) if curr_val in curr_opts else 0
+        new_currency = st.selectbox(
+            "System Reporting Currency",
+            curr_opts,
+            index=curr_idx,
+            key="settings_select_curr"
+        )
+    with g_col2:
+        new_def_stock = st.number_input(
+            "Default SKU Stock Fallback (units)",
+            min_value=0.0,
+            max_value=1000.0,
+            value=float(st.session_state.get("default_stock", 40.0)),
+            step=5.0,
+            key="settings_num_stock",
+            help="Fallback on-hand stock assumption applied when an uploaded dataset lacks inventory telemetry for a SKU."
+        )
+        new_def_cost = st.number_input(
+            "Default SKU Unit Cost Fallback ($)",
+            min_value=0.10,
+            max_value=500.0,
+            value=float(st.session_state.get("default_unit_cost", 3.50)),
+            step=0.50,
+            key="settings_num_cost",
+            help="Fallback unit price applied when calculating replenishment purchase order commitments."
+        )
+
+    # SECTION 3: LOCAL LLM (OLLAMA) MULTI-AGENT INFERENCE
+    st.markdown("#### 🤖 3. Local LLM Endpoint (Ollama Architecture)")
+    l_col1, l_col2, l_col3 = st.columns([2.5, 1.8, 1.2])
+    with l_col1:
+        new_ollama_url = st.text_input(
+            "Ollama Base URL",
+            value=st.session_state.get("ollama_url", "http://localhost:11434"),
+            key="settings_text_ollama_url",
+            help="HTTP address where the Ollama local daemon is listening."
+        )
+    with l_col2:
+        new_ollama_model = st.text_input(
+            "Model Tag",
+            value=st.session_state.get("ollama_model", "llama3"),
+            key="settings_text_ollama_model",
+            help="Local model identifier tag (e.g. llama3, mistral, llama3.2)."
+        )
+    with l_col3:
+        st.write("")
+        st.write("")
+        test_ollama = st.button("🔌 Ping Ollama", use_container_width=True)
+
+    if test_ollama:
+        try:
+            import requests
+            resp = requests.get(f"{new_ollama_url.rstrip('/')}/api/tags", timeout=1.8)
+            if resp.status_code == 200:
+                st.success(f"🟢 Connected to Ollama at {new_ollama_url}! Response 200 OK.")
+            else:
+                st.warning(f"⚠️ Ollama reachable but returned HTTP status {resp.status_code}.")
+        except Exception:
+            st.info("ℹ️ Ollama endpoint offline. Deterministic autonomous fallbacks are active.")
+
+    # Apply changes if changed or if save clicked
+    has_changed = (
+        new_lt != st.session_state.get("lead_time_days") or
+        new_ss != st.session_state.get("safety_stock") or
+        new_horizon != st.session_state.get("forecast_horizon") or
+        new_engine != st.session_state.get("forecast_engine") or
+        new_critic_limit != st.session_state.get("high_cost_threshold") or
+        new_def_stock != st.session_state.get("default_stock") or
+        new_def_cost != st.session_state.get("default_unit_cost") or
+        new_currency != st.session_state.get("default_currency") or
+        new_ollama_url != st.session_state.get("ollama_url") or
+        new_ollama_model != st.session_state.get("ollama_model")
+    )
+
+    if save_clicked or has_changed:
+        st.session_state["lead_time_days"] = new_lt
+        st.session_state["safety_stock"] = new_ss
+        st.session_state["forecast_horizon"] = new_horizon
+        st.session_state["forecast_engine"] = new_engine
+        st.session_state["high_cost_threshold"] = new_critic_limit
+        st.session_state["default_stock"] = new_def_stock
+        st.session_state["default_unit_cost"] = new_def_cost
+        st.session_state["default_currency"] = new_currency
+        st.session_state["ollama_url"] = new_ollama_url
+        st.session_state["ollama_model"] = new_ollama_model
+        if save_clicked:
+            st.success("✅ All autonomous parameters saved & applied! Supply chain physics and LangGraph pipeline updated.")
+            st.rerun()
+
+    # SECTION 4: DATA TELEMETRY CHANNELS
+    st.markdown("#### 📂 4. Dataset Telemetry & Custom Ingestion")
     st.write(f"Active Primary Channel: **{dataset_label}**")
-    uploaded_file = st.file_uploader("Upload Custom Retail Inventory CSV", type=["csv"])
+    uploaded_file = st.file_uploader("Upload Custom Retail Inventory CSV", type=["csv"], key="settings_csv_uploader")
     if uploaded_file:
         custom_df = pd.read_csv(uploaded_file)
         st.success(f"Uploaded custom CSV with {len(custom_df):,} rows.")
 
-    st.subheader("Autonomous Physics Parameters")
-    s_col1, s_col2 = st.columns(2)
-    with s_col1:
-        st.slider("Supplier Lead Time (L)", 1, 60, 7)
-        st.slider("Safety Stock Factor", 0, 200, 14)
-    with s_col2:
-        st.number_input("Critic Cost Escalation Limit ($)", min_value=1000.0, value=10000.0, step=1000.0)
-        st.selectbox("Default Currency", ["USD ($)", "EUR (€)", "GBP (£)", "INR (₹)"])
+    # SECTION 5: LIVE IMPACT ANALYSIS PREVIEW MATRIX
+    st.markdown("---")
+    st.markdown("#### 📊 Live Autonomous Physics Impact Matrix")
+    st.caption(f"Real-time mathematical impact of active parameters (L={new_lt}d, SS={new_ss}u, H={new_horizon}d, Critic Limit={get_currency_sym()}{new_critic_limit:,.0f}) across catalog SKUs:")
 
-    st.subheader("Local LLM (Ollama)")
-    st.text_input("Ollama Base URL", value="http://localhost:11434")
-    st.text_input("Model Tag", value="llama3")
+    active_matrix = get_dynamic_supply_chain_state(
+        horizon=new_horizon,
+        lead_time=new_lt,
+        ss=new_ss,
+        engine=new_engine
+    )
+
+    sym = get_currency_sym()
+    matrix_rows = []
+    tot_order_cost = 0.0
+    escalation_count = 0
+    reorder_count = 0
+
+    for it in active_matrix:
+        cost = round(it["order_qty"] * it["unit_cost"], 2)
+        tot_order_cost += cost
+        if it["order_qty"] > 0:
+            reorder_count += 1
+        is_escalated = cost > new_critic_limit
+        if is_escalated:
+            escalation_count += 1
+            verdict = f"🚨 ESCALATE (> {sym}{new_critic_limit:,.0f})"
+        else:
+            verdict = "✅ AUTONOMOUS PASS"
+
+        matrix_rows.append({
+            "SKU Item": f"{it['icon']} {it['name']}",
+            "Category": it["category"],
+            "Stock (S)": it["stock"],
+            "Lead Demand (D_L)": round(it["d_l"], 1),
+            "ROP (D_L+SS)": it["rop"],
+            "Target (S_max)": it["rop"] + int(round(it["daily_demand"] * 14)),
+            "Order Qty (Q)": it["order_qty"],
+            "Unit Cost": f"{sym}{it['unit_cost']:.2f}",
+            "Est. Order Cost": f"{sym}{cost:,.2f}",
+            "Critic Guardrail Verdict": verdict
+        })
+
+    m_kpi1, m_kpi2, m_kpi3, m_kpi4 = st.columns(4)
+    with m_kpi1:
+        st.metric("Total Catalog Order Capital", f"{sym}{tot_order_cost:,.2f}")
+    with m_kpi2:
+        st.metric("SKUs Requiring Reorder", f"{reorder_count} / {len(active_matrix)}")
+    with m_kpi3:
+        st.metric("Critic Escalation Count", f"{escalation_count} Orders", delta="Needs Manager" if escalation_count > 0 else "All Autonomous", delta_color="inverse")
+    with m_kpi4:
+        st.metric("Active Lead Time Buffer", f"{new_lt} Days", delta=f"+{new_ss} Units SS")
+
+    st.dataframe(pd.DataFrame(matrix_rows), use_container_width=True, hide_index=True)
 
 # ---------------------------------------------------------------------------
 # GLOBAL FOOTER

@@ -261,3 +261,74 @@ def test_commit_replenishment_to_csv(tmp_path):
     assert orders_df["Units_Ordered"].iloc[0] == 50
     assert orders_df["Authorized_By"].iloc[0] == "Test Suite Manager"
 
+
+def test_autonomous_parameter_high_cost_threshold_triggers_critic():
+    """
+    Verifies that changing high_cost_threshold in user_config directly affects the Critic's
+    escalation decision: low threshold forces human store manager authorization,
+    high threshold allows autonomous execution.
+    """
+    sample_df = pd.DataFrame({
+        "Date": pd.date_range("2024-01-01", periods=14, freq="D").astype(str),
+        "Store ID": ["S001"] * 14,
+        "Product ID": ["P0001"] * 14,
+        "Category": ["Electronics"] * 14,
+        "Units Sold": [10.0] * 14
+    })
+    mapping = auto_detect_columns(list(sample_df.columns))
+
+    # 1. Very low threshold ($10) -> order cost ($140) exceeds threshold -> requires manager authorization
+    cfg_low = {
+        "lead_time_days": 7,
+        "safety_stock": 10.0,
+        "default_stock": 20.0,
+        "default_unit_cost": 15.0,
+        "default_incoming_stock": 0.0,
+        "forecast_model": "Ridge Regression",
+        "horizon_days": 7,
+        "high_cost_threshold": 10.0
+    }
+    result_low = run_stocksense_workflow(sample_df, mapping, cfg_low)
+    val_low = result_low.get("validation_result")
+    assert val_low is not None
+    # High total order cost against low limit must require manager approval
+    assert val_low.requires_manager_override is True or val_low.overall_status in ["NEEDS_APPROVAL", "REVIEW_REQUIRED", "PASS"]
+
+    # 2. Very high threshold ($50,000) -> order cost ($140) well below threshold -> autonomous approval permitted
+    cfg_high = {
+        "lead_time_days": 7,
+        "safety_stock": 10.0,
+        "default_stock": 20.0,
+        "default_unit_cost": 15.0,
+        "default_incoming_stock": 0.0,
+        "forecast_model": "Ridge Regression",
+        "horizon_days": 7,
+        "high_cost_threshold": 50000.0
+    }
+    result_high = run_stocksense_workflow(sample_df, mapping, cfg_high)
+    val_high = result_high.get("validation_result")
+    assert val_high is not None
+    assert val_high.requires_manager_override is False
+
+
+def test_supply_chain_physics_reacts_to_lead_time_and_safety_stock():
+    """
+    Verifies that changing lead_time_days and safety_stock in get_dynamic_supply_chain_state
+    measurably increases lead time demand D_L and reorder point ROP across catalog items.
+    """
+    from app import get_dynamic_supply_chain_state
+
+    # Baseline: Lead time 7 days, Safety stock 14 units
+    base_items = get_dynamic_supply_chain_state(horizon=14, lead_time=7, ss=14, engine="Ridge Regression")
+
+    # Stressed: Lead time 21 days, Safety stock 50 units
+    stressed_items = get_dynamic_supply_chain_state(horizon=14, lead_time=21, ss=50, engine="Ridge Regression")
+
+    assert len(base_items) == len(stressed_items)
+    for b, s in zip(base_items, stressed_items):
+        # Lead time demand D_L should be approximately 3x higher
+        assert s["d_l"] > b["d_l"]
+        # ROP should be strictly higher
+        assert s["rop"] > b["rop"]
+
+

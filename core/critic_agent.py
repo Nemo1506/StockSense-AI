@@ -37,6 +37,13 @@ class ValidationResult:
         return self.overall_status
 
     @property
+    def requires_manager_override(self) -> bool:
+        """True if any recommendation requires managerial override / human approval."""
+        return self.overall_status == "REVIEW" or any(
+            v.get("status") == "REVIEW" for v in self.item_verdicts.values()
+        )
+
+    @property
     def arithmetic_discrepancies(self) -> List[str]:
         """Extracts arithmetic mismatches or formula deviations across item verdicts."""
         discrepancies = []
@@ -160,8 +167,9 @@ class CriticAgent:
                 reasons.append("High stockout risk verified: (S < D_L). Replenishment order recommended.")
 
             if rec.estimated_cost is not None and rec.estimated_cost >= self.high_cost_review_threshold:
+                status = "REVIEW"
                 reasons.append(
-                    f"Capital Expenditure Note: Order value (${rec.estimated_cost:.2f}) verified against high-cost threshold (${self.high_cost_review_threshold:.2f})."
+                    f"Capital Expenditure Note: Order value (${rec.estimated_cost:.2f}) verified against high-cost threshold (${self.high_cost_review_threshold:.2f}). Escalated for Human Store Manager Authorization."
                 )
 
             if rec.current_stock is None:
